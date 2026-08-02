@@ -1769,7 +1769,8 @@ useEffect(() => {
       <div className="flex items-center gap-2 min-w-0">
         <LayoutGrid className="h-4 w-4 text-gray-300 flex-shrink-0" />
         <span className="truncate">{categoryLabel}</span>
-        {isLoadingCategories && <ChevronDown className="h-3.5 w-3.5 text-purple-400 animate-spin flex-shrink-0" />}
+        {/* A spinning chevron read as a second dropdown arrow — use the spinner. */}
+        {isLoadingCategories && <Loader2 className="h-3.5 w-3.5 text-purple-400 animate-spin flex-shrink-0" />}
       </div>
       <ChevronDown className="h-4 w-4 text-gray-400 flex-shrink-0" />
     </button>

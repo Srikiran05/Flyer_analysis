@@ -137,28 +137,56 @@ const cell = (ref: string, value: string | number): string => {
   return `<c r="${ref}" t="inlineStr"><is><t xml:space="preserve">${esc(String(value))}</t></is></c>`;
 };
 
+const IMAGE_COLUMN = FULLDATA_COLUMNS.indexOf("image_location");
+
 /**
- * Rebuilds `xl/worksheets/sheet1.xml` (the `fulldata` sheet) from scratch.
+ * Rebuilds `xl/worksheets/sheet1.xml` (the `fulldata` sheet) from scratch, plus
+ * its relationship part — image URLs are written as real Excel hyperlinks, which
+ * live in the sheet's rels rather than the cell.
+ *
  * Inline strings keep us out of the workbook's shared string table, which the
  * pivot result sheets still index into.
  */
-export const buildFullDataSheet = (rows: Record<string, string | number>[]): string => {
+export const buildFullDataSheet = (
+  rows: Record<string, string | number>[],
+): { xml: string; rels: string } => {
   const last = colName(FULLDATA_COLUMNS.length - 1);
   const header = FULLDATA_COLUMNS.map((c, i) => cell(`${colName(i)}1`, c)).join("");
+  const links: { ref: string; target: string }[] = [];
   const body = rows
     .map((row, r) => {
       const n = r + 2;
+      const image = row.image_location;
+      if (typeof image === "string" && /^https?:\/\//i.test(image)) {
+        links.push({ ref: `${colName(IMAGE_COLUMN)}${n}`, target: image });
+      }
       const cells = FULLDATA_COLUMNS.map((c, i) => cell(`${colName(i)}${n}`, row[c] ?? "")).join("");
       return `<row r="${n}">${cells}</row>`;
     })
     .join("");
   const dim = `A1:${last}${rows.length + 1}`;
-  return (
+  const hyperlinks = links.length
+    ? `<hyperlinks>${links
+        .map((l, i) => `<hyperlink ref="${l.ref}" r:id="rId${i + 1}"/>`)
+        .join("")}</hyperlinks>`
+    : "";
+  const xml =
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
-    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"' +
+    ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
     `<dimension ref="${dim}"/><sheetData><row r="1">${header}</row>${body}</sheetData>` +
-    `<autoFilter ref="${dim}"/></worksheet>`
-  );
+    `<autoFilter ref="${dim}"/>${hyperlinks}</worksheet>`;
+  const rels =
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+    links
+      .map(
+        (l, i) =>
+          `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="${esc(l.target).replace(/"/g, "&quot;")}" TargetMode="External"/>`,
+      )
+      .join("") +
+    "</Relationships>";
+  return { xml, rels };
 };
 
 /**
@@ -181,10 +209,18 @@ const TEMPLATE_URL = "/pivot-template.xlsx";
 export const downloadPivotWorkbook = async (rows: ExportRow[], filename: string) => {
   const res = await fetch(TEMPLATE_URL);
   if (!res.ok) throw new Error(`Pivot template missing (${res.status})`);
-  const files = unzipSync(new Uint8Array(await res.arrayBuffer()));
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  // A missing asset still returns 200 here: the SPA rewrite hands back
+  // index.html. Every xlsx is a zip, so check the "PK" magic number instead.
+  if (bytes[0] !== 0x50 || bytes[1] !== 0x4b) {
+    throw new Error("Pivot template not deployed — public/pivot-template.xlsx is missing");
+  }
+  const files = unzipSync(bytes);
 
   const fullData = rows.map(toFullDataRow);
-  files["xl/worksheets/sheet1.xml"] = strToU8(buildFullDataSheet(fullData));
+  const sheet = buildFullDataSheet(fullData);
+  files["xl/worksheets/sheet1.xml"] = strToU8(sheet.xml);
+  files["xl/worksheets/_rels/sheet1.xml.rels"] = strToU8(sheet.rels);
 
   const cachePath = "xl/pivotCache/pivotCacheDefinition1.xml";
   files[cachePath] = strToU8(patchCacheDefinition(strFromU8(files[cachePath]), fullData.length));
