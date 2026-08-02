@@ -127,47 +127,34 @@ const CustomBarLabel = (props: any) => {
 
 
 // --- Custom Tooltip for Retailer Activities composed chart ---
-const RetailerTooltip = ({ active, payload, label, currency, priceOption, barColor = '#a78bfa' }: any) => {
-  if (active && payload && payload.length) {
-    const offerD = payload.find((p: any) => p.dataKey === 'offer_count');
-    
-    const key = priceOption === 'regular' ? 'avg_regular_price' :
-                priceOption === 'discount' ? 'avg_discount' :
-                'avg_offer_price';
-    const avgD = payload.find((p: any) => p.dataKey === key);
-    
-    const isDiscount = priceOption === 'discount';
-    const labelTitle = isDiscount ? 'Average Discount' : 'Average Price';
-    
-    return (
-      <div style={{ background: '#18181b', border: '1px solid #3f3f46', borderRadius: 12, padding: 16, minWidth: 220, boxShadow: '0 8px 32px rgba(0,0,0,.5)' }} className="chart-tooltip text-white text-xs z-50">
-        <p style={{ color: '#fff', fontWeight: 700, fontSize: 13, marginBottom: 10, borderBottom: '1px solid #27272a', paddingBottom: 8 }}>{label}</p>
-        <div className="space-y-2">
-          {offerD && (
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>
+// Lists every series in the payload, so it works whether one brand or five are
+// selected. Counts (`count__<brand>`) print raw; prices carry the currency.
+const RetailerTooltip = ({ active, payload, label, currency, priceOption }: any) => {
+  if (!active || !payload?.length) return null;
+  const isDiscount = priceOption === 'discount';
+
+  return (
+    <div style={{ background: '#18181b', border: '1px solid #3f3f46', borderRadius: 12, padding: 16, minWidth: 220, boxShadow: '0 8px 32px rgba(0,0,0,.5)' }} className="chart-tooltip text-white text-xs z-50">
+      <p style={{ color: '#fff', fontWeight: 700, fontSize: 13, marginBottom: 10, borderBottom: '1px solid #27272a', paddingBottom: 8 }}>{label}</p>
+      <div className="space-y-2">
+        {payload.map((p: any) => {
+          const isCount = String(p.dataKey).startsWith('count__');
+          const value = Number(p.value) || 0;
+          return (
+            <div key={p.dataKey} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <div style={{ width: 10, height: 10, borderRadius: 2, background: barColor }} />
-                <span style={{ color: '#a1a1aa' }}>Offer Count</span>
+                <div style={{ width: 10, height: 10, borderRadius: isCount ? 2 : 5, background: p.color || p.stroke || p.fill }} />
+                <span style={{ color: '#a1a1aa' }}>{p.name}</span>
               </div>
-              <span style={{ color: '#fff', fontWeight: 700 }}>{offerD.value}</span>
-            </div>
-          )}
-          {avgD && (
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <div style={{ width: 10, height: 10, borderRadius: 5, background: '#f97316' }} />
-                <span style={{ color: '#a1a1aa' }}>{labelTitle}</span>
-              </div>
-              <span style={{ color: '#f97316', fontWeight: 700 }}>
-                {isDiscount ? `${Number(avgD.value).toFixed(1)}%` : `${currency} ${Number(avgD.value).toFixed(1)}`}
+              <span style={{ color: '#fff', fontWeight: 700 }}>
+                {isCount ? value : isDiscount ? `${value.toFixed(1)}%` : `${currency} ${value.toFixed(1)}`}
               </span>
             </div>
-          )}
-        </div>
+          );
+        })}
       </div>
-    );
-  }
-  return null;
+    </div>
+  );
 };
 
 
@@ -259,14 +246,16 @@ const CompetitorPricingAnalysis: FC<CompetitorPricingAnalysisProps> = ({
     const [isDistributionView, setIsDistributionView] = useState(false);
     const [selectedPromotionDetails, setSelectedPromotionDetails] = useState<any[]>([]);
     const [expandedBrandSummary, setExpandedBrandSummary] = useState<Record<string, boolean>>({});
-    const [selectedChartBrand, setSelectedChartBrand] = useState<string | null>(null);
+    // Brands clicked in the Average Price chart. Cumulative — clicking a second
+    // brand adds it to the retailer activity chart instead of replacing it.
+    const [selectedChartBrands, setSelectedChartBrands] = useState<string[]>([]);
 
     useEffect(() => {
         setSelectedPromotionDetails([]);
     }, [products]);
 
-    // --- RPC Data State (Retailer Activity) ---
-    const [retailerActivity, setRetailerActivity] = useState<any[]>([]);
+    // --- RPC Data State (Retailer Activity) — one row set per selected brand ---
+    const [retailerSeries, setRetailerSeries] = useState<Record<string, any[]>>({});
     const [isLoadingRetailer, setIsLoadingRetailer] = useState(false);
 
     const retailerActivityRef = useRef<HTMLDivElement>(null);
@@ -638,14 +627,33 @@ const CompetitorPricingAnalysis: FC<CompetitorPricingAnalysisProps> = ({
     };
     const defaultColors = ['bg-blue-500 border-blue-400', 'bg-green-500 border-green-400', 'bg-orange-500 border-orange-400', 'bg-pink-500 border-pink-400'];
 
+    const retailerPriceKey = selectedPriceOption === 'regular' ? 'avg_regular_price' :
+                             selectedPriceOption === 'discount' ? 'avg_discount' :
+                             'avg_offer_price';
+
+    // Merge every selected brand's rows onto one row per retailer, so the chart
+    // can draw a bar and a line per brand side by side.
+    const retailerActivity = useMemo(() => {
+        const byRetailer = new Map<string, any>();
+        for (const brand of selectedChartBrands) {
+            for (const row of retailerSeries[brand] ?? []) {
+                const name = row.retailer;
+                if (!byRetailer.has(name)) byRetailer.set(name, { retailer: name });
+                const merged = byRetailer.get(name);
+                merged[`count__${brand}`] = row.offer_count;
+                merged[`price__${brand}`] = row[retailerPriceKey];
+            }
+        }
+        return Array.from(byRetailer.values());
+    }, [retailerSeries, selectedChartBrands, retailerPriceKey]);
+
     // Bottom Chart Max Values — coerce to number to prevent NaN propagation
-    const maxRetailerOfferCount = useMemo(() => Math.max(...retailerActivity.map(d => Number(d.offer_count) || 0), 0) + 1, [retailerActivity]);
-    const maxRetailerAvgValue = useMemo(() => {
-        const key = selectedPriceOption === 'regular' ? 'avg_regular_price' :
-                    selectedPriceOption === 'discount' ? 'avg_discount' :
-                    'avg_offer_price';
-        return Math.max(...retailerActivity.map(d => Number(d[key]) || 0), 0) + 5;
-    }, [retailerActivity, selectedPriceOption]);
+    const maxRetailerOfferCount = useMemo(() => Math.max(
+        ...retailerActivity.flatMap(d => selectedChartBrands.map(b => Number(d[`count__${b}`]) || 0)), 0,
+    ) + 1, [retailerActivity, selectedChartBrands]);
+    const maxRetailerAvgValue = useMemo(() => Math.max(
+        ...retailerActivity.flatMap(d => selectedChartBrands.map(b => Number(d[`price__${b}`]) || 0)), 0,
+    ) + 5, [retailerActivity, selectedChartBrands]);
 
     // --- EFFECT: Fetch Retailer Activity (RPC) ---
     // useEffect(() => {
@@ -675,10 +683,7 @@ const CompetitorPricingAnalysis: FC<CompetitorPricingAnalysisProps> = ({
     useEffect(() => {
         const controller = new AbortController();
 
-        const fetchRetailerActivity = async () => {
-            const target = selectedChartBrand;
-            if (!target) return;
-
+        const fetchOne = async (target: string) => {
             const cacheKey = JSON.stringify({
                 target,
                 selectedCountry,
@@ -690,51 +695,57 @@ const CompetitorPricingAnalysis: FC<CompetitorPricingAnalysisProps> = ({
             });
 
             const cached = retailerCacheRef.current.get(cacheKey);
-            if (cached) {
-                setRetailerActivity(cached);
+            if (cached) return cached;
+
+            // RPC Call matching the SQL Signature
+            const { data, error } = await supabase.rpc('get_retailer_activity', {
+                target_brand: target,
+                selected_country: getCountryKey(selectedCountry),
+
+                // Wrap single strings into arrays for SQL
+                p_regions: selectedRegion ? [selectedRegion] : [],
+                p_categories: selectedCategory ? [selectedCategory] : [],
+
+                // Pass arrays directly
+                p_subcategories: selectedSubCategories,
+                p_pack_sizes: selectedPackSizes,
+
+                // Boolean toggle
+                p_distinct_only: isDistinctView
+            }).abortSignal(controller.signal);
+
+            if (error) throw error;
+
+            const parsedData = (data ?? []).map((item: any) => ({
+                ...item,
+                avg_offer_price: item.avg_offer_price ? parseFloat(item.avg_offer_price) : 0,
+                avg_regular_price: item.avg_regular_price ? parseFloat(item.avg_regular_price) : 0,
+                avg_discount: item.avg_discount ? parseFloat(item.avg_discount) : 0,
+                offer_count: item.offer_count ? parseInt(item.offer_count, 10) : 0
+            }));
+            retailerCacheRef.current.set(cacheKey, parsedData);
+            return parsedData;
+        };
+
+        const fetchRetailerActivity = async () => {
+            if (selectedChartBrands.length === 0) {
+                setRetailerSeries({});
                 setIsLoadingRetailer(false);
                 return;
             }
 
             setIsLoadingRetailer(true);
-
             try {
-                // RPC Call matching the SQL Signature
-                const { data, error } = await supabase.rpc('get_retailer_activity', {
-                    target_brand: target,
-                    selected_country: getCountryKey(selectedCountry),
-                    
-                    // Wrap single strings into arrays for SQL
-                    p_regions: selectedRegion ? [selectedRegion] : [],
-                    p_categories: selectedCategory ? [selectedCategory] : [],
-                    
-                    // Pass arrays directly
-                    p_subcategories: selectedSubCategories,
-                    p_pack_sizes: selectedPackSizes,
-                    
-                    // Boolean toggle
-                    p_distinct_only: isDistinctView
-                }).abortSignal(controller.signal);
-
-                if (error) throw error;
-                
-                // Only update state if data exists
-                if (data) {
-                    const parsedData = data.map((item: any) => ({
-                        ...item,
-                        avg_offer_price: item.avg_offer_price ? parseFloat(item.avg_offer_price) : 0,
-                        avg_regular_price: item.avg_regular_price ? parseFloat(item.avg_regular_price) : 0,
-                        avg_discount: item.avg_discount ? parseFloat(item.avg_discount) : 0,
-                        offer_count: item.offer_count ? parseInt(item.offer_count, 10) : 0
-                    }));
-                    setRetailerActivity(parsedData);
-                    retailerCacheRef.current.set(cacheKey, parsedData);
-                }
+                const results = await Promise.all(selectedChartBrands.map(fetchOne));
+                if (controller.signal.aborted) return;
+                setRetailerSeries(
+                    Object.fromEntries(selectedChartBrands.map((b, i) => [b, results[i]])),
+                );
             } catch (err: any) {
                 if (err.name === 'AbortError' || err.message?.includes('aborted')) {
                     return;
                 }
-                setRetailerActivity([]);
+                setRetailerSeries({});
             } finally {
                 // Ensure loading always turns off
                 if (!controller.signal.aborted) {
@@ -749,27 +760,23 @@ const CompetitorPricingAnalysis: FC<CompetitorPricingAnalysisProps> = ({
             controller.abort();
         };
     }, [
-        selectedCountry, 
-        selectedChartBrand, 
-        selectedRegion, 
-        selectedCategory, 
+        selectedCountry,
+        selectedRegion,
+        selectedCategory,
         isDistinctView,
         // 🛑 CRITICAL FIX: Convert arrays to strings to prevent infinite loops
+        JSON.stringify(selectedChartBrands),
         JSON.stringify(selectedSubCategories),
         JSON.stringify(selectedPackSizes)
     ]);
 
     const handleChartBarClick = (brand: string, shouldScroll = true) => {
-        // Toggle behavior: clicking the same brand deselects it
-        if (selectedChartBrand === brand) {
-            setSelectedChartBrand(null);
-            setRetailerActivity([]);
-            setIsLoadingRetailer(false);
+        // Cumulative: clicking a new brand adds it, clicking a selected one removes it.
+        if (selectedChartBrands.includes(brand)) {
+            setSelectedChartBrands(prev => prev.filter(b => b !== brand));
             return;
         }
-        setIsLoadingRetailer(true);
-        setRetailerActivity([]);
-        setSelectedChartBrand(brand);
+        setSelectedChartBrands(prev => [...prev, brand]);
         if (shouldScroll) {
             setTimeout(() => {
                 retailerActivityRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -1225,7 +1232,7 @@ const CompetitorPricingAnalysis: FC<CompetitorPricingAnalysisProps> = ({
                                         <tr 
                                             className={`border-b border-zinc-800/80 hover:bg-zinc-800/60 cursor-pointer transition-all duration-200 ${
                                                 expandedBrandSummary[row.brand] ? 'bg-zinc-800/20' : ''
-                                            } ${selectedChartBrand === row.brand ? 'bg-zinc-800/40 border-l-2 border-l-purple-500' : ''}`}
+                                            } ${selectedChartBrands.includes(row.brand) ? 'bg-zinc-800/40 border-l-2 border-l-purple-500' : ''}`}
                                             onClick={() => {
                                                 toggleBrandSummary(row.brand);
                                             }}
@@ -1279,10 +1286,21 @@ const CompetitorPricingAnalysis: FC<CompetitorPricingAnalysisProps> = ({
     <div className="flex flex-col items-center mb-8">
         <h2 className="text-2xl font-bold text-white tracking-tight">Brandwise Retailer Activities</h2>
         <div className="mt-2 px-4 py-1.5 bg-zinc-900 rounded-full border border-zinc-800">
-            <span className="text-zinc-400 text-sm font-medium">
-                {selectedChartBrand
-                    ? <span style={{ color: getBrandColor(brandColorMap, selectedChartBrand, 0).main }}>Selected: {selectedChartBrand}</span>
-                    : 'Select a brand to view details'}
+            <span className="text-zinc-400 text-sm font-medium flex flex-wrap items-center gap-x-2 gap-y-1 justify-center">
+                {selectedChartBrands.length > 0
+                    ? selectedChartBrands.map((b, i) => (
+                        <button
+                          key={b}
+                          type="button"
+                          onClick={() => handleChartBarClick(b, false)}
+                          title="Remove from chart"
+                          style={{ color: getBrandColor(brandColorMap, b, i).main }}
+                          className="hover:opacity-70 transition-opacity"
+                        >
+                          {b} ✕
+                        </button>
+                      ))
+                    : 'Select one or more brands to view details'}
             </span>
         </div>
     </div>
@@ -1300,12 +1318,14 @@ const CompetitorPricingAnalysis: FC<CompetitorPricingAnalysisProps> = ({
               margin={{ top: 30, right: 60, left: 30, bottom: 20 }}
             >
               <defs>
-                {/* Bar color follows the clicked brand so it matches that
-                    brand's bar in the Average Price chart above. */}
-                <linearGradient id="barGradCyan" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor={getBrandColor(brandColorMap, selectedChartBrand, 0).main} />
-                  <stop offset="100%" stopColor={getBrandColor(brandColorMap, selectedChartBrand, 0).dark} />
-                </linearGradient>
+                {/* One gradient per selected brand so each bar matches that
+                    brand's colour in the Average Price chart above. */}
+                {selectedChartBrands.map((b, i) => (
+                  <linearGradient key={b} id={`retailerGrad-${compGradId(b)}`} x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor={getBrandColor(brandColorMap, b, i).main} />
+                    <stop offset="100%" stopColor={getBrandColor(brandColorMap, b, i).dark} />
+                  </linearGradient>
+                ))}
               </defs>
               <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
               <XAxis 
@@ -1318,16 +1338,16 @@ const CompetitorPricingAnalysis: FC<CompetitorPricingAnalysisProps> = ({
               />
               <YAxis
                 yAxisId="left"
-                stroke={getBrandColor(brandColorMap, selectedChartBrand, 0).main}
+                stroke="#a1a1aa"
                 width={60}
-                tick={{ fill: getBrandColor(brandColorMap, selectedChartBrand, 0).main, fontSize: 12, fontWeight: 500 }}
+                tick={{ fill: '#a1a1aa', fontSize: 12, fontWeight: 500 }}
                 tickLine={false}
                 axisLine={false}
                 label={{
                   value: 'Offer Count',
                   angle: -90,
                   position: 'insideLeft',
-                  fill: getBrandColor(brandColorMap, selectedChartBrand, 0).main,
+                  fill: '#a1a1aa',
                   fontSize: 12,
                   fontWeight: 600,
                   style: { textAnchor: 'middle' },
@@ -1354,53 +1374,55 @@ const CompetitorPricingAnalysis: FC<CompetitorPricingAnalysisProps> = ({
                 }}
                 tickFormatter={(v) => selectedPriceOption === 'discount' ? `${v}%` : `${v}`}
               />
-              <RechartsTooltip 
+              <RechartsTooltip
                 cursor={{ fill: '#3f3f46', opacity: 0.3 }}
-                content={<RetailerTooltip currency={currentCurrency} priceOption={selectedPriceOption} barColor={getBrandColor(brandColorMap, selectedChartBrand, 0).main} />}
+                content={<RetailerTooltip currency={currentCurrency} priceOption={selectedPriceOption} />}
               />
-              
-              <Bar 
-                yAxisId="left"
-                dataKey="offer_count" 
-                name="Offer Count" 
-                fill="url(#barGradCyan)" 
-                radius={[6,6,0,0]} 
-                barSize={24} 
-                animationDuration={800}
-                label={{ position: 'top', fill: getBrandColor(brandColorMap, selectedChartBrand, 0).main, fontSize: 11, fontWeight: 600 }}
-              />
-              <Line 
-                yAxisId="right"
-                type="monotone"
-                dataKey={
-                  selectedPriceOption === 'regular' ? 'avg_regular_price' :
-                  selectedPriceOption === 'discount' ? 'avg_discount' :
-                  'avg_offer_price'
-                }
-                name={selectedPriceOption === 'discount' ? 'Average Discount' : 'Average Price'}
-                stroke="#f97316" 
-                strokeWidth={3} 
-                dot={{ r: 4, fill: '#f97316', strokeWidth: 0 }}
-                activeDot={{ r: 6, fill: '#fff', stroke: '#f97316', strokeWidth: 2 }}
-                animationDuration={800}
-              />
+
+              {selectedChartBrands.map((b, i) => (
+                <Bar
+                  key={`bar-${b}`}
+                  yAxisId="left"
+                  dataKey={`count__${b}`}
+                  name={`${b} — Offer Count`}
+                  fill={`url(#retailerGrad-${compGradId(b)})`}
+                  radius={[6,6,0,0]}
+                  barSize={selectedChartBrands.length > 1 ? 16 : 24}
+                  animationDuration={800}
+                />
+              ))}
+              {selectedChartBrands.map((b, i) => (
+                <Line
+                  key={`line-${b}`}
+                  yAxisId="right"
+                  type="monotone"
+                  dataKey={`price__${b}`}
+                  name={`${b} — ${selectedPriceOption === 'discount' ? 'Average Discount' : 'Average Price'}`}
+                  stroke={getBrandColor(brandColorMap, b, i).main}
+                  strokeWidth={3}
+                  strokeDasharray="5 4"
+                  dot={{ r: 4, fill: getBrandColor(brandColorMap, b, i).main, strokeWidth: 0 }}
+                  activeDot={{ r: 6, fill: '#fff', stroke: getBrandColor(brandColorMap, b, i).main, strokeWidth: 2 }}
+                  animationDuration={800}
+                />
+              ))}
             </ComposedChart>
           </ResponsiveContainer>
           
-          <div className="flex justify-center gap-10 mt-6 border-t border-zinc-800/50 pt-4">
-              <div className="flex items-center gap-3">
-                  <div
-                    className="w-4 h-4 rounded-sm shadow-sm"
-                    style={{ background: `linear-gradient(to top, ${getBrandColor(brandColorMap, selectedChartBrand, 0).dark}, ${getBrandColor(brandColorMap, selectedChartBrand, 0).main})` }}
-                  ></div>
-                  <span className="text-zinc-300 text-sm font-medium">Offer Count</span>
-              </div>
-              <div className="flex items-center gap-3">
-                  <div className="w-4 h-4 rounded-full shadow-[0_0_8px_rgba(249,115,22,0.5)] border border-zinc-900" style={{ backgroundColor: '#f97316' }}></div>
-                  <span className="text-zinc-300 text-sm font-medium">
-                    {selectedPriceOption === 'discount' ? 'Average Discount' : 'Average Price'}
-                  </span>
-              </div>
+          <div className="flex flex-wrap justify-center gap-x-8 gap-y-3 mt-6 border-t border-zinc-800/50 pt-4">
+              {selectedChartBrands.map((b, i) => (
+                <div key={b} className="flex items-center gap-3">
+                    <div
+                      className="w-4 h-4 rounded-sm shadow-sm"
+                      style={{ background: `linear-gradient(to top, ${getBrandColor(brandColorMap, b, i).dark}, ${getBrandColor(brandColorMap, b, i).main})` }}
+                    ></div>
+                    <span className="text-zinc-300 text-sm font-medium">{b} — Offer Count</span>
+                    <div className="w-5 h-0 border-t-[3px] border-dashed" style={{ borderColor: getBrandColor(brandColorMap, b, i).main }}></div>
+                    <span className="text-zinc-300 text-sm font-medium">
+                      {selectedPriceOption === 'discount' ? 'Avg Discount' : 'Avg Price'}
+                    </span>
+                </div>
+              ))}
           </div>
         </div>
     ) : (

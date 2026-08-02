@@ -54,12 +54,28 @@ describe("data export workbook", () => {
   });
 
   describe("buildFullDataSheet", () => {
-    const xml = buildFullDataSheet([toFullDataRow(row)]);
+    const { xml } = buildFullDataSheet([toFullDataRow(row)]);
 
     it("writes the header in cache-field order and escapes text", () => {
       expect(xml).toContain('<t xml:space="preserve">country</t>');
       expect(xml).toContain('<t xml:space="preserve">Lamb &amp; Weston</t>');
       expect(xml).toContain('<dimension ref="A1:Q2"/>');
+    });
+
+    it("turns image URLs into hyperlinks on the image_location column", () => {
+      const withImage = buildFullDataSheet([
+        toFullDataRow({ ...row, image_path: "https://cdn.example.com/a.jpg?w=1&h=2" }),
+      ]);
+      // image_location is column O.
+      expect(withImage.xml).toContain('<hyperlink ref="O2" r:id="rId1"/>');
+      expect(withImage.rels).toContain('Target="https://cdn.example.com/a.jpg?w=1&amp;h=2"');
+      expect(withImage.rels).toContain('TargetMode="External"');
+    });
+
+    it("skips hyperlinks for non-URL image paths", () => {
+      const relative = buildFullDataSheet([toFullDataRow({ ...row, image_path: "pics/a.jpg" })]);
+      expect(relative.xml).not.toContain("<hyperlinks>");
+      expect(relative.rels).not.toContain("<Relationship ");
     });
 
     it("keeps the 15 pivot cache fields inside A:O", () => {
