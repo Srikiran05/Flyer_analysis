@@ -21,7 +21,7 @@ import {
   getYear,
   getISOWeek
 } from 'date-fns';
-import { unparse } from 'papaparse';
+import { downloadPivotWorkbook } from '../utils/dataExportWorkbook';
 import { Download, Info, Loader2, ChevronDown, Check, Search, X, MoreHorizontal, Sparkles, Lightbulb, ArrowUpDown, Table } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import CompetitorPricingAnalysis from './CompetitorPricingAnalysis';
@@ -36,6 +36,7 @@ import {
 } from '../utils/promotionAnalysisUtils';
 
 import { supabase } from '@/lib/supabaseClient';
+import { getCurrency } from '../utils/offerBankUtils';
 
 // --- TYPES ---
 type DateRangeKey = 'latest4Weeks' | 'latest12Weeks' | 'ytd' | 'latest52Weeks';
@@ -492,6 +493,19 @@ const PromotionAnalysis: FC = () => {
   const [brandsInSelectedCategory, setBrandsInSelectedCategory] = useState<string[]>([]);
   const [isLoadingBrandsInCategory, setIsLoadingBrandsInCategory] = useState(false);
   const competitorDropdownRef = useRef<HTMLDivElement | null>(null);
+
+  // Close the competitor dropdown when clicking anywhere outside it. Without
+  // this it stayed open over the other filters and charts.
+  useEffect(() => {
+    if (!isCompetitorDropdownOpen) return;
+    const handleOutsideClick = (e: MouseEvent) => {
+      if (competitorDropdownRef.current && !competitorDropdownRef.current.contains(e.target as Node)) {
+        setIsCompetitorDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleOutsideClick);
+    return () => document.removeEventListener('mousedown', handleOutsideClick);
+  }, [isCompetitorDropdownOpen]);
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingFilters, setIsLoadingFilters] = useState(false);
   const [dateRanges, setDateRanges] = useState<DateRanges>(getDateRanges());
@@ -569,6 +583,41 @@ const PromotionAnalysis: FC = () => {
   const [appliedBrandOnBrand, setAppliedBrandOnBrand] = useState(() => sessionStorage.getItem("promoanalysis_appliedBrandOnBrand") === "true");
   const [appliedBrandA, setAppliedBrandA] = useState(() => sessionStorage.getItem("promoanalysis_appliedBrandA") || "");
   const [appliedBrandB, setAppliedBrandB] = useState(() => sessionStorage.getItem("promoanalysis_appliedBrandB") || "");
+
+  // Flags the Apply button the moment a selection no longer matches the
+  // filters the current analysis was actually run with.
+  const hasUnappliedChanges = Boolean(appliedMyBrand) && (
+    country !== appliedCountry ||
+    selectedCategory !== appliedCategory ||
+    myBrand !== appliedMyBrand ||
+    selectedRegion !== appliedRegion ||
+    selectedRetailer !== appliedRetailer ||
+    selectedSubCategory !== appliedSubCategory ||
+    selectedBasePack !== appliedBasePack ||
+    selectedQuantity !== appliedQuantity ||
+    offerType !== appliedOfferType ||
+    isBrandOnBrandToggled !== appliedBrandOnBrand ||
+    (isBrandOnBrandToggled
+      ? (brandA || myBrand) !== appliedBrandA || brandB !== appliedBrandB
+      : JSON.stringify(selectedCompetitors) !== JSON.stringify(appliedCompetitors))
+  );
+
+  // Nudge once per change-cycle, not on every filter tweak: only one toast
+  // shows at a time, so re-firing would re-animate constantly and evict
+  // other messages. Resets when the filters are applied again.
+  const warnedUnappliedRef = useRef(false);
+  useEffect(() => {
+    if (!hasUnappliedChanges) {
+      warnedUnappliedRef.current = false;
+      return;
+    }
+    if (warnedUnappliedRef.current) return;
+    warnedUnappliedRef.current = true;
+    toast({
+      title: "Filters changed",
+      description: "Click Apply Filters to update the analysis.",
+    });
+  }, [hasUnappliedChanges, toast]);
 
   // --- SAVE STATES TO SESSION STORAGE ---
   useEffect(() => {
@@ -696,13 +745,6 @@ const PromotionAnalysis: FC = () => {
 
 
   // --- CONSTANTS ---
-  const currencyMap: Record<string, string> = {
-    "Qatar": "QAR",
-    "Kuwait": "KWD",
-    "Oman": "OMR",
-    "Saudi Arabia": "SAR",
-    "United Arab Emirates": "AED"
-  };
 
   // --- 1. GET CURRENT USER EMAIL ON MOUNT ---
   useEffect(() => {
@@ -1418,7 +1460,7 @@ const PromotionAnalysis: FC = () => {
 
     // const currentCurrency = currencyMap[country] || '';
     // CHANGE: Use appliedCountry so currency matches the data shown
-    const currentCurrency = currencyMap[appliedCountry] || '';
+    const currentCurrency = getCurrency(appliedCountry);
 
     const chartKeys: DateRangeKey[] = ['latest4Weeks', 'latest12Weeks', 'ytd', 'latest52Weeks'];
     const activityChart = chartKeys
@@ -1783,12 +1825,16 @@ const PromotionAnalysis: FC = () => {
       toast({ title: "No data to export or data still loading", variant: "destructive" });
       return;
     }
-    const csv = unparse(dataToExport);
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    link.download = `promo_analysis_${new Date().toISOString().split('T')[0]}.csv`;
-    link.click();
+    // Multi-sheet workbook built from the data_pivot template: fulldata plus the
+    // five live PivotTables (Leaflet Share / DOP / Price Per KG / SKU / Pack).
+    try {
+      await downloadPivotWorkbook(
+        dataToExport as any,
+        `promo_analysis_${new Date().toISOString().split('T')[0]}.xlsx`,
+      );
+    } catch (e) {
+      toast({ title: "Export failed", description: (e as Error).message, variant: "destructive" });
+    }
   };
 
   const insights = useMemo(() => {
@@ -2048,11 +2094,6 @@ const PromotionAnalysis: FC = () => {
                     ? 'All Competitors'
                     : selectedCompetitors.join(', ')}
               </button>
-              {!selectedCompetitors.includes(ALL_COMPETITORS) && selectedCompetitors.length > 0 && (
-                <div className="mt-1 text-[11px] text-orange-300/90 truncate">
-                  {selectedCompetitors.join(', ')}
-                </div>
-              )}
               <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-orange-500/50 pointer-events-none" />
               {isCompetitorDropdownOpen && !isLoadingFilters && (
                 <div className="absolute left-0 right-0 mt-1 max-h-60 overflow-y-auto rounded-xl border border-zinc-800/80 bg-zinc-950/95 backdrop-blur-md shadow-2xl z-50 p-1.5 space-y-1 scrollbar-thin scrollbar-thumb-zinc-800 scrollbar-track-transparent animate-in fade-in slide-in-from-top-1 duration-200">
@@ -2325,7 +2366,7 @@ const PromotionAnalysis: FC = () => {
                       </div>
                       <div>
                         <h4 className="text-sm font-semibold text-zinc-300 mb-3">
-                          Avg offer price by period ({currencyMap[appliedCountry] || ''})
+                          Avg offer price by period ({getCurrency(appliedCountry)})
                         </h4>
                         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
                           {([] as any[]).map((c) => (
@@ -2354,7 +2395,7 @@ const PromotionAnalysis: FC = () => {
                                         backgroundColor: '#18181b',
                                         border: '1px solid #404040',
                                       }}
-                                      formatter={(v: number) => [`${(currencyMap[appliedCountry] || '').trim()} ${v.toFixed(1)}`, 'Avg offer']}
+                                      formatter={(v: number) => [`${(getCurrency(appliedCountry)).trim()} ${v.toFixed(1)}`, 'Avg offer']}
                                     />
                                     <Bar dataKey="avgOffer" name="Avg offer" fill={c.color} radius={[3, 3, 0, 0]} maxBarSize={28} />
                                   </BarChart>
@@ -2594,7 +2635,7 @@ const PromotionAnalysis: FC = () => {
                       <YAxis stroke="#71717a" tick={{ fill: '#a1a1aa', fontSize: 12 }} tickLine={false} axisLine={false} />
                       <Tooltip cursor={{ fill: '#3f3f46', opacity: 0.3 }} content={({ active, payload, label }: any) => {
                         if (!active || !payload?.length) return null;
-                        const currentCurrency = currencyMap[appliedCountry] || 'AED';
+                        const currentCurrency = getCurrency(appliedCountry);
                         const formatVal = (v: any) => {
                           if (typeof v !== 'number') return 'N/A';
                           if (priceTrendType === 'discount') return `${v.toFixed(1)}%`;
@@ -2633,14 +2674,14 @@ const PromotionAnalysis: FC = () => {
                       <Tooltip cursor={{ fill: '#3f3f46', opacity: 0.3 }} content={({ active, payload, label }: any) => {
                         if (!active || !payload?.length) return null;
                         const myD = payload[0]; const compD = payload[1];
-                        const currentCurrency = currencyMap[appliedCountry] || 'AED';
+                        const currentCurrency = getCurrency(appliedCountry);
                         const formatVal = (v: any) => {
                           if (typeof v !== 'number') return 'N/A';
                           if (priceTrendType === 'discount') return `${v.toFixed(1)}%`;
                           return `${currentCurrency} ${v.toFixed(1)}`;
                         };
                         return (
-                          <div style={{ background: '#18181b', border: '1px solid #3f3f46', borderRadius: 12, padding: 16, minWidth: 220, boxShadow: '0 8px 32px rgba(0,0,0,.5)' }} className="text-white text-xs z-50">
+                          <div style={{ background: '#18181b', border: '1px solid #3f3f46', borderRadius: 12, padding: 16, minWidth: 220, boxShadow: '0 8px 32px rgba(0,0,0,.5)' }} className="chart-tooltip text-white text-xs z-50">
                             <div style={{ color: '#fff', fontWeight: 700, fontSize: 13, marginBottom: 10, borderBottom: '1px solid #27272a', paddingBottom: 8 }}>{label}</div>
                             {myD && <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}><div style={{ display: 'flex', alignItems: 'center', gap: 8 }}><div style={{ width: 10, height: 10, borderRadius: 2, background: '#8b5cf6' }} /><span style={{ color: '#a1a1aa', fontSize: 12 }}>{myD.name}</span></div><span style={{ color: '#fff', fontWeight: 700 }}>{formatVal(myD.value)}</span></div>}
                             {compD && <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}><div style={{ display: 'flex', alignItems: 'center', gap: 8 }}><div style={{ width: 10, height: 10, borderRadius: 2, background: '#ea580c' }} /><span style={{ color: '#a1a1aa', fontSize: 12 }}>{compD.name}</span></div><span style={{ color: '#fff', fontWeight: 700 }}>{formatVal(compD.value)}</span></div>}
@@ -2832,7 +2873,7 @@ const PromotionAnalysis: FC = () => {
                   className="inline-flex items-center gap-2 px-6 py-2.5 rounded-lg font-bold text-xs uppercase tracking-wider text-white bg-gradient-to-r from-purple-600 to-orange-500 shadow-md transition-all hover:scale-[1.02] hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-purple-500 disabled:opacity-50 disabled:grayscale disabled:cursor-not-allowed border border-white/10"
                 >
                   <Download className="h-4 w-4" />
-                  Download CSV
+                  Download Excel
                 </button>
 
                 {/* Three dots dropdown */}
@@ -3004,7 +3045,7 @@ const PromotionAnalysis: FC = () => {
                   <div className="p-3 bg-zinc-950/20 rounded-xl border border-zinc-800/60">
                     <span className="text-[10px] uppercase font-bold text-zinc-500 block mb-1">Avg Discounted Price</span>
                     <span className="text-emerald-400 font-mono font-bold text-sm">
-                      {insights.avgPrice} <span className="text-[10px] text-zinc-500 font-normal">{currencyMap[appliedCountry] || ''}</span>
+                      {insights.avgPrice} <span className="text-[10px] text-zinc-500 font-normal">{getCurrency(appliedCountry)}</span>
                     </span>
                   </div>
                   <div className="p-3 bg-zinc-950/20 rounded-xl border border-zinc-800/60">

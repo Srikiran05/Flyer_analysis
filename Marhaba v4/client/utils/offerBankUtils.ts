@@ -28,12 +28,28 @@ export const getRegionsForCountry = (countryName: string | null): string[] => {
   return regionsMap[countryName] || [];
 };
 
-export const getCurrency = (countryName: string | null): string => {
-  if (!countryName) return "";
-  return currencyMap[countryName] || "";
+// Country arrives either from the UI dropdowns ("Saudi Arabia") or straight
+// from flyer_products, which stores it lowercased ("saudi arabia") and uses
+// "uae" for the Emirates. Match case-insensitively so both resolve.
+const currencyByLowerName: Record<string, string> = {
+  ...Object.fromEntries(Object.entries(currencyMap).map(([k, v]) => [k.toLowerCase(), v])),
+  uae: "AED",
+  ksa: "SAR",
 };
 
-export const sameStringArray = (a: string[], b: string[]): boolean => {
+export const getCurrency = (countryName: string | null | undefined): string => {
+  if (!countryName) return "";
+  return currencyByLowerName[countryName.trim().toLowerCase()] || "";
+};
+
+// Data arrives lowercased from the source flyers ("saudi arabia", "chicken liver");
+// display it capitalised without touching the stored value.
+export const toTitleCase = (value: unknown): string => {
+  if (typeof value !== "string") return "";
+  return value.replace(/\b[a-z]/g, (c) => c.toUpperCase());
+};
+
+export const sameStringArray =(a: string[], b: string[]): boolean => {
   if (a === b) return true;
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i += 1) {

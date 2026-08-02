@@ -69,7 +69,8 @@ import {
   normalizeMultiSelectForRpc,
   tryParseDate,
   parseValidRange,
-  parsePrice
+  parsePrice,
+  toTitleCase
 } from '../utils/offerBankUtils';
 
 // --- INTERFACES ---
@@ -538,18 +539,24 @@ export default function OfferBank() {
 
   // Mirror shared filters into Promotion Analysis' session keys so switching
   // from Offer Bank to Promo Analysis keeps the same context (country,
-  // category, retailer). Promo still requires pressing Apply there.
+  // category). Retailer is deliberately NOT mirrored: Offer Bank is
+  // multi-select, Promo Analysis is single-select, and copying the first
+  // retailer made Promo default to one retailer instead of "All Retailers".
   useEffect(() => {
     if (country) sessionStorage.setItem("promoanalysis_country", country);
   }, [country]);
   useEffect(() => {
-    const first = category.find((c) => c && c.toLowerCase() !== "all");
-    if (first) sessionStorage.setItem("promoanalysis_selectedCategory", first);
+    // Only mirror a genuine single choice. "All Categories" expands to the
+    // full list here, and taking the first entry handed Promo Analysis a
+    // real selection ("Cereals & Bars", alphabetically first) instead of
+    // leaving it on "All Categories".
+    const picked = category.filter((c) => c && c.toLowerCase() !== "all");
+    if (picked.length === 1) {
+      sessionStorage.setItem("promoanalysis_selectedCategory", picked[0]);
+    } else {
+      sessionStorage.removeItem("promoanalysis_selectedCategory");
+    }
   }, [category]);
-  useEffect(() => {
-    const first = retailers.find((r) => r && r.toLowerCase() !== "all");
-    if (first) sessionStorage.setItem("promoanalysis_selectedRetailer", first);
-  }, [retailers]);
 
   // Safe wrapper setters to prevent redundant renders from reference-inequality
   const setCity = useCallback((val: string[] | ((prev: string[]) => string[])) => {
@@ -960,48 +967,38 @@ useEffect(() => {
         }
       }
 
-      // 2. Fetch category-scoped filters (brands, subcategories, pack sizes)
+      // 2. Fetch category-scoped filters (brands, subcategories, pack sizes).
+      // One query per dimension_type: the row cap applies per request, and
+      // mv_promo_dimensions UNIONs pack sizes last, so a combined query spent
+      // its whole budget on brands and returned zero pack sizes.
       const hasSelectedCategories = Array.isArray(category) && category.length > 0;
-      
-      let detailQuery = supabase
-        .from('mv_promo_dimensions')
-        .select('dimension_type, dimension_value')
-        .eq('country_key', getDbCountryKey(country))
-        .in('dimension_type', ['brand', 'subcategory', 'pack_size']);
 
-      if (hasSelectedCategories) {
-        detailQuery = detailQuery.in('parent_category', category);
-      } else {
-        // Fallback or limit to first 1000 rows to prevent massive fetches
-        detailQuery = detailQuery.limit(1000);
-      }
-
-      const { data: detailData, error: detailError } = await detailQuery;
-
-      if (detailError) {
-        console.error("❌ Error loading detail filters:", detailError);
-      } else if (detailData && requestId === filterFetchRequestRef.current) {
-        const nextBrands = Array.from(new Set(
-          detailData
-            .filter(r => r.dimension_type === 'brand')
-            .map(r => r.dimension_value?.trim() || "")
+      const fetchDimension = async (type: string) => {
+        let q = supabase
+          .from('mv_promo_dimensions')
+          .select('dimension_value')
+          .eq('country_key', getDbCountryKey(country))
+          .eq('dimension_type', type);
+        if (hasSelectedCategories) q = q.in('parent_category', category);
+        const { data, error } = await q.limit(1000);
+        if (error) {
+          console.error(`❌ Error loading ${type} filters:`, error);
+          return [] as string[];
+        }
+        return Array.from(new Set(
+          (data || [])
+            .map((r: any) => r.dimension_value?.trim() || "")
             .filter(Boolean)
-        )).sort((a, b) => a.localeCompare(b));
+        )).sort((a, b) => a.localeCompare(b)) as string[];
+      };
 
-        const nextSubCats = Array.from(new Set(
-          detailData
-            .filter(r => r.dimension_type === 'subcategory')
-            .map(r => r.dimension_value?.trim() || "")
-            .filter(Boolean)
-        )).sort((a, b) => a.localeCompare(b));
+      const [nextBrands, nextSubCats, nextPackSizes] = await Promise.all([
+        fetchDimension('brand'),
+        fetchDimension('subcategory'),
+        fetchDimension('pack_size'),
+      ]);
 
-        const nextPackSizes = Array.from(new Set(
-          detailData
-            .filter(r => r.dimension_type === 'pack_size')
-            .map(r => r.dimension_value?.trim() || "")
-            .filter(Boolean)
-        )).sort((a, b) => a.localeCompare(b));
-
+      if (requestId === filterFetchRequestRef.current) {
         setAllBrands(nextBrands);
         setSubCategories(nextSubCats);
         setPackSizeOptions(nextPackSizes);
@@ -1031,6 +1028,12 @@ useEffect(() => {
   // Keep selected categories in sync when available category options change.
   // If user had "all selected" before options expanded (e.g., 18 -> 22), promote selection to full list.
   useEffect(() => {
+    // Options empty means they haven't loaded yet (or are reloading after a
+    // country change) — not that every category became invalid. Filtering the
+    // selection against an empty list wiped it permanently: applying a saved
+    // filter set the categories, the reload blanked `categories`, this cleared
+    // the selection to [], and the dropdown fell back to "Select Categories".
+    if (categories.length === 0) return;
     setCategory((prev) => {
       if (!Array.isArray(prev) || prev.length === 0) return prev;
       const previousTotal = prevCategoriesCountRef.current;
@@ -1070,6 +1073,61 @@ useEffect(() => {
     activeBrands,
     selectedPacks
   };
+
+  // Sidebar filters (Brand, Pack Size) apply on their own — see the effect
+  // below — so they are deliberately excluded from the "needs Apply" check.
+  // Compare on a normalised signature, not raw JSON.stringify of the two
+  // objects: appliedFilters can come from a saved filter (brands/packSize keys)
+  // or from sessionStorage (dates as strings), so a straight stringify compare
+  // stayed permanently unequal — which meant the nudge fired once on mount and
+  // never again.
+  const filterSignature = (f: any) => JSON.stringify({
+    offerType: f?.offerType ?? "",
+    country: f?.country ?? "",
+    city: [...(f?.city ?? [])].sort(),
+    retailers: [...(f?.retailers ?? [])].sort(),
+    category: [...(f?.category ?? [])].sort(),
+    subCategory: f?.subCategory ?? "all",
+    search: (f?.search ?? "").trim(),
+    from: f?.range?.from ? new Date(f.range.from).getTime() : null,
+    to: f?.range?.to ? new Date(f.range.to).getTime() : null,
+    showDistinct: Boolean(f?.showDistinct),
+  });
+
+  const hasUnappliedChanges = applied && appliedFilters
+    ? filterSignature(currentFilters) !== filterSignature(appliedFilters)
+    : false;
+
+  // Brand and Pack Size are sidebar filters: they take effect as soon as they
+  // change, no Apply click. They still go through appliedFilters (and so the
+  // RPC) rather than being filtered in the browser, which keeps the offer count
+  // and pagination honest — client-side filtering would only trim the current
+  // page. Early-returns when nothing changed, so this can't loop.
+  useEffect(() => {
+    if (!applied || !appliedFilters) return;
+    const prevBrands = appliedFilters.activeBrands ?? appliedFilters.brands ?? [];
+    const prevPacks = appliedFilters.selectedPacks ?? appliedFilters.packSize ?? [];
+    if (sameStringArray(prevBrands, activeBrands) && sameStringArray(prevPacks, selectedPacks)) return;
+    setAppliedFilters({ ...appliedFilters, activeBrands, selectedPacks });
+    setPage(1);
+  }, [activeBrands, selectedPacks, applied, appliedFilters]);
+
+  // Nudge once per change-cycle, not on every filter tweak: only one toast
+  // shows at a time, so re-firing would re-animate constantly and evict
+  // other messages. Resets when the filters are applied again.
+  const warnedUnappliedRef = useRef(false);
+  useEffect(() => {
+    if (!hasUnappliedChanges) {
+      warnedUnappliedRef.current = false;
+      return;
+    }
+    if (warnedUnappliedRef.current) return;
+    warnedUnappliedRef.current = true;
+    toast({
+      title: "Filters changed",
+      description: "Click Apply to update the results.",
+    });
+  }, [hasUnappliedChanges, toast]);
 
   // Scroll to top when page changes
   useEffect(() => {
@@ -1406,10 +1464,12 @@ useEffect(() => {
   };
 
   const handleCompareClick = () => {
-    if (compareList.length > 0 && compareList.length < 2) {
+    if (compareList.length < 2) {
       toast({
         title: "Comparison Incomplete",
-        description: "Add one more offer to compare.",
+        description: compareList.length === 0
+          ? "Select two offers to compare."
+          : "Add one more offer to compare.",
         variant: "destructive"
       });
     } else {
@@ -1553,7 +1613,7 @@ useEffect(() => {
       <section className="container mx-auto px-4 py-6">
 
         {/* --- TOP FILTER BAR 1 (Back, Dropdowns, Actions) --- */}
-        <div className="rounded-lg bg-gradient-to-r from-white via-white to-white p-px shadow-lg">
+        <div className="rounded-lg bg-white p-px shadow-lg">
           <div className="rounded-lg bg-zinc-950 p-4">
             <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-4">
               
@@ -1875,7 +1935,9 @@ useEffect(() => {
                 });
                 setApplied(true);
                 setPage(1);
-              }} className="inline-flex items-center gap-2 h-9 px-4 rounded-md font-medium text-white text-sm bg-gradient-to-r from-purple-500 to-orange-500 shadow-sm transition-transform duration-200 ease-in-out hover:-translate-y-0.5 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-purple-500 disabled:opacity-60 disabled:cursor-not-allowed disabled:from-purple-300 disabled:to-orange-300">Apply</button>
+              }} className="inline-flex items-center gap-2 h-9 px-4 rounded-md font-medium text-white text-sm bg-gradient-to-r from-purple-500 to-orange-500 shadow-sm transition-transform duration-200 ease-in-out hover:-translate-y-0.5 hover:shadow-lg focus:outline-none focus:ring-2 focus:ring-purple-500 disabled:opacity-60 disabled:cursor-not-allowed disabled:from-purple-300 disabled:to-orange-300">
+                Apply
+              </button>
             </div>
           </div>
         </div>
@@ -1945,17 +2007,17 @@ useEffect(() => {
                             <th scope="col" className="px-4 py-3 text-center w-16 border-b border-white/10 whitespace-nowrap">S.No</th>
                             <th scope="col" className="px-4 py-3 text-center w-20 border-b border-white/10 whitespace-nowrap">Image</th>
                             <th scope="col" className="px-4 py-3 text-left w-32 border-b border-white/10 whitespace-nowrap">Country</th>
-                            <th scope="col" className="px-4 py-3 text-left w-32 border-b border-white/10 whitespace-nowrap">Retailer</th>
-                            <th scope="col" className="px-4 py-3 text-left w-32 border-b border-white/10 whitespace-nowrap">Offer Image ID</th>
                             <th scope="col" className="px-4 py-3 text-left min-w-[200px] border-b border-white/10 whitespace-nowrap">Offer Name</th>
-                            <th scope="col" className="px-4 py-3 text-left min-w-[150px] border-b border-white/10 whitespace-nowrap">Offer Timeline</th>
-                            <th scope="col" className="px-4 py-3 text-right w-28 border-b border-white/10 whitespace-nowrap">Promo Price</th>
+                            <th scope="col" className="px-4 py-3 text-left w-32 border-b border-white/10 whitespace-nowrap">Retailer</th>
                             <th scope="col" className="px-4 py-3 text-right w-28 border-b border-white/10 whitespace-nowrap">Regular Price</th>
-                            <th scope="col" className="px-4 py-3 text-left w-32 border-b border-white/10 whitespace-nowrap">Brand</th>
-                            <th scope="col" className="px-4 py-3 text-left w-32 border-b border-white/10 whitespace-nowrap">Product</th>
+                            <th scope="col" className="px-4 py-3 text-right w-28 border-b border-white/10 whitespace-nowrap">Promo Price</th>
                             <th scope="col" className="px-4 py-3 text-left w-24 border-b border-white/10 whitespace-nowrap">Pack Size</th>
-                            <th scope="col" className="px-4 py-3 text-left w-24 border-b border-white/10 whitespace-nowrap">Promo Qty</th>
+                            <th scope="col" className="px-4 py-3 text-left w-32 border-b border-white/10 whitespace-nowrap">Product</th>
+                            <th scope="col" className="px-4 py-3 text-left w-32 border-b border-white/10 whitespace-nowrap">Brand</th>
+                            <th scope="col" className="px-4 py-3 text-left min-w-[150px] border-b border-white/10 whitespace-nowrap">Offer Timeline</th>
                             <th scope="col" className="px-4 py-3 text-left w-32 border-b border-white/10 whitespace-nowrap">Promo Mechanic</th>
+                            <th scope="col" className="px-4 py-3 text-left w-24 border-b border-white/10 whitespace-nowrap">Promo Qty</th>
+                            <th scope="col" className="px-4 py-3 text-left w-32 border-b border-white/10 whitespace-nowrap">Offer Image ID</th>
                             <th scope="col" className="px-4 py-3 text-center w-28 border-b border-white/10 whitespace-nowrap">Actions</th>
                           </tr>
                         </thead>
@@ -1970,20 +2032,20 @@ useEffect(() => {
                                 </td>
                                 <td className="px-4 py-3 text-center align-middle text-gray-400">{(page - 1) * ITEMS_PER_PAGE + idx + 1}</td>
                                 <td className="px-4 py-3 align-middle"><div className="flex justify-center"><img src={o.image || '/placeholder.svg'} alt={o.title} className="h-10 w-10 object-contain rounded bg-white p-0.5" /></div></td>
-                                <td className="px-4 py-3 align-middle font-medium text-white whitespace-nowrap">{o.country}</td>
+                                <td className="px-4 py-3 align-middle font-medium text-white whitespace-nowrap">{toTitleCase(o.country)}</td>
+                                <td className="px-4 py-3 align-middle font-medium text-white whitespace-normal">{o.title}</td>
                                 <td className="px-4 py-3 align-middle whitespace-nowrap">
                                   <RetailerLogo name={o.retailer} />
                                 </td>
-                                <td className="px-4 py-3 align-middle text-xs font-mono text-gray-400">IMG_00{o.id}</td>
-                                <td className="px-4 py-3 align-middle font-medium text-white whitespace-normal">{o.title}</td>
-                                <td className="px-4 py-3 align-middle text-xs text-gray-400 leading-tight whitespace-normal">{formatOfferTimeline(o.startDate, o.endDate, o.valid)}</td>
-                                <td className="px-4 py-3 align-middle text-right font-bold text-green-400 whitespace-nowrap">{currencySymbol} {o.price}</td>
                                 <td className="px-4 py-3 align-middle text-right text-gray-400 whitespace-nowrap">{o.original > 0 ? `${currencySymbol} ${o.original}` : '-'}</td>
-                                <td className="px-4 py-3 align-middle text-gray-300 whitespace-nowrap">{o.brand}</td>
-                                <td className="px-4 py-3 align-middle text-gray-300 whitespace-nowrap">{o.productType}</td>
+                                <td className="px-4 py-3 align-middle text-right font-bold text-green-400 whitespace-nowrap">{currencySymbol} {o.price}</td>
                                 <td className="px-4 py-3 align-middle text-gray-300 whitespace-nowrap">{o.packSize}</td>
-                                <td className="px-4 py-3 align-middle text-gray-400 text-center">-</td>
+                                <td className="px-4 py-3 align-middle text-gray-300 whitespace-nowrap">{toTitleCase(o.productType)}</td>
+                                <td className="px-4 py-3 align-middle text-gray-300 whitespace-nowrap">{o.brand}</td>
+                                <td className="px-4 py-3 align-middle text-xs text-gray-400 leading-tight whitespace-normal">{formatOfferTimeline(o.startDate, o.endDate, o.valid)}</td>
                                 <td className="px-4 py-3 align-middle text-gray-400 whitespace-nowrap">Special Offer</td>
+                                <td className="px-4 py-3 align-middle text-gray-400 text-center">-</td>
+                                <td className="px-4 py-3 align-middle text-xs font-mono text-gray-400">IMG_00{o.id}</td>
                                 <td className="px-4 py-3 align-middle">
                                   <div className="flex items-center justify-center gap-2">
                                     <button onClick={() => { setDetailOffer(o); setDetailOpen(true); }} className="rounded bg-white text-black px-2 py-1 text-xs font-medium hover:bg-gray-200 transition-colors">View</button>
@@ -2109,57 +2171,61 @@ useEffect(() => {
             </div>
           </div>
 
+          {/* Save Filter / Saved Offers / Saved Filters are available regardless of
+              whether filters have been applied yet — only Compare needs applied offers. */}
+          <Dialog open={isSaveDialogOpen} onOpenChange={setIsSaveDialogOpen}>
+            <DialogContent className="sm:max-w-[425px] bg-zinc-900/90 backdrop-blur-md text-zinc-200">
+              <DialogHeader><DialogTitle>Save Filter</DialogTitle><DialogDescription className="text-zinc-400">Give this filter a name.</DialogDescription></DialogHeader>
+              <div className="grid gap-4 py-4">
+                <div className="grid grid-cols-4 items-center gap-4"><Label htmlFor="name" className="text-right text-zinc-400">Name</Label><Input id="name" value={filterName} onChange={(e) => setFilterName(e.target.value)} className="col-span-3 bg-zinc-800 border-zinc-600" placeholder="Filter Name" /></div>
+                <div className="grid grid-cols-4 items-center gap-4"><Label htmlFor="description" className="text-right text-zinc-400">Description</Label><Textarea id="description" value={filterDescription} onChange={(e) => setFilterDescription(e.target.value)} className="col-span-3 bg-zinc-800 border-zinc-600" placeholder="Description" /></div>
+              </div>
+              <DialogFooter><button onClick={() => setIsSaveDialogOpen(false)} className="h-9 px-4 rounded-md border border-zinc-700 bg-transparent text-zinc-300 hover:bg-zinc-800">Cancel</button><button onClick={handleSaveFilter} className="h-9 px-4 rounded-md font-medium text-black bg-white hover:bg-gray-200">Save Filter</button></DialogFooter>
+            </DialogContent>
+          </Dialog>
+
+          <Dialog open={savedDialogOpen} onOpenChange={setSavedDialogOpen}>
+            <DialogContent className="sm:max-w-[600px] bg-zinc-900/90 backdrop-blur-md text-zinc-200 max-h-[80vh] overflow-y-auto">
+              <DialogHeader><DialogTitle className="text-white">Saved Offers</DialogTitle></DialogHeader>
+              <div className="mt-4 space-y-4">
+                {savedOffers.length === 0 ? (<div className="text-center text-zinc-400 py-8">No saved offers yet.</div>) : (savedOffers.map((o) => (
+                  <div key={o.id} className="flex items-center gap-4 p-3 rounded-lg bg-white/5 border border-zinc-700">
+                    <img src={o.image} alt={o.title} className="h-16 w-16 object-contain bg-white rounded" />
+                    <div className="flex-1 min-w-0"><h4 className="text-white font-medium truncate">{o.title}</h4><div className="flex items-center gap-2 text-sm"><span className="text-purple-400 font-bold">{currencySymbol} {o.price}</span></div></div>
+                    <button onClick={() => { setDetailOffer(o); setDetailOpen(true); setSavedDialogOpen(false); }} className="px-3 py-1.5 text-xs bg-white text-black rounded hover:bg-gray-200">View</button>
+                    <button onClick={() => toggleFavorite(o)} aria-label="Remove from saved offers" className="p-2 text-red-500 hover:bg-white/10 rounded" title="Unlike">
+                      <Heart className="h-4 w-4 fill-red-500 text-red-500" />
+                    </button>
+                  </div>
+                )))}
+              </div>
+            </DialogContent>
+          </Dialog>
+
+          <Dialog open={savedFiltersDialogOpen} onOpenChange={setSavedFiltersDialogOpen}>
+            <DialogContent className="sm:max-w-[500px] bg-zinc-900/90 backdrop-blur-md text-zinc-200 max-h-[80vh] overflow-y-auto">
+              <DialogHeader><DialogTitle className="text-white">Saved Filters</DialogTitle></DialogHeader>
+              <div className="mt-4 space-y-3">
+                {savedFilters.length === 0 ? (<div className="text-center text-zinc-400 py-8">No saved filters found.</div>) : (savedFilters.map((f) => (
+                  <div key={f.id} className="group flex items-center justify-between p-3 rounded-lg bg-white/5 border border-zinc-700 hover:bg-white/10 transition-colors cursor-pointer" onClick={() => handleApplySavedFilter(f)}>
+                    <div><h4 className="text-white font-medium">{f.name}</h4><p className="text-[10px] text-zinc-500 mt-1">{format(f.timestamp, "MMM dd, yyyy")}</p></div>
+                    <button onClick={(e) => { e.stopPropagation(); deleteSavedFilter(f.id); }} className="p-2 text-zinc-400 hover:text-red-500 hover:bg-white/5 rounded"><Trash2 className="h-4 w-4" /></button>
+                  </div>
+                )))}
+              </div>
+            </DialogContent>
+          </Dialog>
+
           {applied && (
             <>
               {/* Compare Button */}
-              <button onClick={handleCompareClick} disabled={compareList.length === 0} className="fixed bottom-8 right-8 z-50 flex items-center justify-center gap-2 h-14 w-40 rounded-full bg-gradient-to-r from-purple-500 to-orange-500 text-white font-bold shadow-lg transition-transform duration-200 ease-in-out hover:-translate-y-1 hover:shadow-2xl focus:outline-none focus:ring-4 focus:ring-purple-400/50 disabled:from-gray-500 disabled:to-gray-600 disabled:opacity-70 disabled:cursor-not-allowed disabled:hover:translate-y-0">
+              <button onClick={handleCompareClick} className="fixed bottom-8 right-8 z-50 flex items-center justify-center gap-2 h-14 w-40 rounded-full bg-gradient-to-r from-purple-500 to-orange-500 text-white font-bold shadow-lg transition-transform duration-200 ease-in-out hover:-translate-y-1 hover:shadow-2xl focus:outline-none focus:ring-4 focus:ring-purple-400/50 disabled:from-gray-500 disabled:to-gray-600 disabled:opacity-70 disabled:cursor-not-allowed disabled:hover:translate-y-0">
                 <span>Compare</span>
                 {compareList.length > 0 && (<span className="flex h-7 w-7 items-center justify-center rounded-full bg-white/20 text-sm">{compareList.length}</span>)}
               </button>
 
-              {/* Dialogs */}
-              <Dialog open={isSaveDialogOpen} onOpenChange={setIsSaveDialogOpen}>
-                <DialogContent className="sm:max-w-[425px] bg-zinc-900/90 backdrop-blur-md border-zinc-700 text-zinc-200">
-                  <DialogHeader><DialogTitle>Save Filter</DialogTitle><DialogDescription className="text-zinc-400">Give this filter a name.</DialogDescription></DialogHeader>
-                  <div className="grid gap-4 py-4">
-                    <div className="grid grid-cols-4 items-center gap-4"><Label htmlFor="name" className="text-right text-zinc-400">Name</Label><Input id="name" value={filterName} onChange={(e) => setFilterName(e.target.value)} className="col-span-3 bg-zinc-800 border-zinc-600" placeholder="Filter Name" /></div>
-                    <div className="grid grid-cols-4 items-center gap-4"><Label htmlFor="description" className="text-right text-zinc-400">Description</Label><Textarea id="description" value={filterDescription} onChange={(e) => setFilterDescription(e.target.value)} className="col-span-3 bg-zinc-800 border-zinc-600" placeholder="Description" /></div>
-                  </div>
-                  <DialogFooter><button onClick={() => setIsSaveDialogOpen(false)} className="h-9 px-4 rounded-md border border-zinc-700 bg-transparent text-zinc-300 hover:bg-zinc-800">Cancel</button><button onClick={handleSaveFilter} className="h-9 px-4 rounded-md font-medium text-black bg-white hover:bg-gray-200">Save Filter</button></DialogFooter>
-                </DialogContent>
-              </Dialog>
-
-              <Dialog open={savedDialogOpen} onOpenChange={setSavedDialogOpen}>
-                <DialogContent className="sm:max-w-[600px] bg-zinc-900/90 backdrop-blur-md border-zinc-700 text-zinc-200 max-h-[80vh] overflow-y-auto">
-                  <DialogHeader><DialogTitle className="text-white">Saved Offers</DialogTitle></DialogHeader>
-                  <div className="mt-4 space-y-4">
-                    {savedOffers.length === 0 ? (<div className="text-center text-zinc-400 py-8">No saved offers yet.</div>) : (savedOffers.map((o) => (
-                      <div key={o.id} className="flex items-center gap-4 p-3 rounded-lg bg-white/5 border border-zinc-700">
-                        <img src={o.image} alt={o.title} className="h-16 w-16 object-contain bg-white rounded" />
-                        <div className="flex-1 min-w-0"><h4 className="text-white font-medium truncate">{o.title}</h4><div className="flex items-center gap-2 text-sm"><span className="text-purple-400 font-bold">{currencySymbol} {o.price}</span></div></div>
-                        <button onClick={() => { setDetailOffer(o); setDetailOpen(true); setSavedDialogOpen(false); }} className="px-3 py-1.5 text-xs bg-white text-black rounded hover:bg-gray-200">View</button>
-                      </div>
-                    )))}
-                  </div>
-                </DialogContent>
-              </Dialog>
-
-              <Dialog open={savedFiltersDialogOpen} onOpenChange={setSavedFiltersDialogOpen}>
-                <DialogContent className="sm:max-w-[500px] bg-zinc-900/90 backdrop-blur-md border-zinc-700 text-zinc-200 max-h-[80vh] overflow-y-auto">
-                  <DialogHeader><DialogTitle className="text-white">Saved Filters</DialogTitle></DialogHeader>
-                  <div className="mt-4 space-y-3">
-                    {savedFilters.length === 0 ? (<div className="text-center text-zinc-400 py-8">No saved filters found.</div>) : (savedFilters.map((f) => (
-                      <div key={f.id} className="group flex items-center justify-between p-3 rounded-lg bg-white/5 border border-zinc-700 hover:bg-white/10 transition-colors cursor-pointer" onClick={() => handleApplySavedFilter(f)}>
-                        <div><h4 className="text-white font-medium">{f.name}</h4><p className="text-[10px] text-zinc-500 mt-1">{format(f.timestamp, "MMM dd, yyyy")}</p></div>
-                        <button onClick={(e) => { e.stopPropagation(); deleteSavedFilter(f.id); }} className="p-2 text-zinc-400 hover:text-red-500 hover:bg-white/5 rounded"><Trash2 className="h-4 w-4" /></button>
-                      </div>
-                    )))}
-                  </div>
-                </DialogContent>
-              </Dialog>
-
               <Dialog open={compareOpen} onOpenChange={setCompareOpen}>
-                <DialogContent className="p-6 w-[95vw] max-w-[1000px] bg-zinc-900/95 backdrop-blur-md border-zinc-800 text-zinc-200 shadow-2xl rounded-xl max-h-[90vh] overflow-y-auto">
+                <DialogContent className="p-6 w-[95vw] max-w-[1000px] bg-zinc-900/95 backdrop-blur-md text-zinc-200 rounded-xl max-h-[90vh] overflow-y-auto">
                   <DialogTitle className="text-xl font-bold text-white tracking-tight">Product Comparison</DialogTitle>
                   <div className="overflow-hidden mt-1">
                     <p className="text-xs text-zinc-400 mb-4">Compare products side by side to find the best deals</p>
@@ -2198,14 +2264,14 @@ useEffect(() => {
                             {[
                               ["Retailer", (p: any) => <div className="flex justify-center"><RetailerLogo name={p.retailer} /></div>],
                               ["Brand", (p: any) => p.brand || "N/A"],
-                              ["Product Type", (p: any) => p.productType || "N/A"],
-                              ["Category", (p: any) => p.category || "N/A"],
+                              ["Product Type", (p: any) => toTitleCase(p.productType) || "N/A"],
+                              ["Category", (p: any) => toTitleCase(p.category) || "N/A"],
                               ["Pack Size", (p: any) => p.packSize || "N/A"],
                               ["Promo Price", (p: any) => `${getCurrency(p.country)} ${p.price}`],
                               ["Regular Price", (p: any) => p.original > 0 ? `${getCurrency(p.country)} ${p.original}` : "N/A"],
                               ["Discount", (p: any) => p.discount > 0 ? `${p.discount}% OFF` : "None"],
                               ["Validity", (p: any) => formatOfferTimeline(p.startDate, p.endDate, p.valid)],
-                              ["Country", (p: any) => p.country || "N/A"]
+                              ["Country", (p: any) => toTitleCase(p.country) || "N/A"]
                             ].map(([label, fn]: any) => (
                               <tr key={label} className="border-t border-zinc-800 hover:bg-zinc-800/10 transition-colors">
                                 <td className="p-3.5 font-semibold text-xs text-zinc-400 bg-zinc-950/40 border-r border-zinc-800 align-middle">
@@ -2407,7 +2473,7 @@ function OfferDetailDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="p-0 overflow-hidden w-[95vw] max-w-[900px] bg-zinc-950 border border-white/10 text-zinc-200 rounded-lg shadow-2xl [&>button]:z-20 [&>button]:!text-white [&>button]:opacity-90">
+      <DialogContent className="p-0 overflow-hidden w-[95vw] max-w-[900px] bg-zinc-950 text-zinc-200 rounded-lg [&>button]:z-20 [&>button]:top-2">
         <DialogTitle className="sr-only">Offer details</DialogTitle>
 
         {/* Top banner matching Sharjah Coop Eid Mubarak Offers */}
@@ -2458,7 +2524,7 @@ function OfferDetailDialog({
               {[
                 ["Retailer", formatRetailerName(offer.retailer)],
                 ["Brand", offer.brand || "N/A"],
-                ["Product", offer.productType || "N/A"],
+                ["Product", toTitleCase(offer.productType) || "N/A"],
                 ["Pack Size", offer.packSize || "N/A"],
                 ["Offer Mechanic", "Weekly Special"]
               ].map(([label, val]) => (
@@ -2658,7 +2724,7 @@ function FlyerDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="p-0 overflow-hidden w-[95vw] max-w-[800px] bg-zinc-950 border border-white/10 text-zinc-200 rounded-lg shadow-2xl flex flex-col max-h-[90vh] [&>button]:z-20 [&>button]:!text-white [&>button]:opacity-90">
+      <DialogContent className="p-0 overflow-hidden w-[95vw] max-w-[800px] bg-zinc-950 text-zinc-200 rounded-lg flex flex-col max-h-[90vh] [&>button]:z-20 [&>button]:top-2">
         <DialogTitle className="sr-only">Flyer Viewer</DialogTitle>
         
         {/* Header - Matching layout with close button */}

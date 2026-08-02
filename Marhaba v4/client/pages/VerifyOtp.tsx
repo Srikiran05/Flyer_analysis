@@ -2,9 +2,7 @@ import { useState, useEffect } from "react";
 import { useAuth } from "../context/AuthContext";
 // [FIXED] Changed to CDN import to avoid module resolution errors in this environment
 import { createClient } from "@supabase/supabase-js";
-import { Link } from "react-router-dom";
-import logo from "../components/ui/marhaba logo1.svg"
-
+import SiteHeader from "../components/layout/SiteHeader";
 
 // Initialize Supabase client
 import { supabase } from '@/lib/supabaseClient';
@@ -67,18 +65,8 @@ export default function VerifyOtp() {
 
   return (
     <div className="min-h-screen bg-black dark:bg-black font-['Inter',_sans-serif] flex flex-col">
-      
-      {/* --- ADDED HEADER SECTION --- */}
-      <header className="container flex h-40 items-center justify-between relative w-full">
-        <div className="container mx-auto px-6 flex h-24 items-center justify-between">
-          {/* Logo */}
-          <Link to="/" className="flex items-center">
-            <img src={logo} alt="Marhaba AI Logo" className="h-36 w-auto" />
-          </Link>
-        </div>
-        {/* Gradient Line */}
-        <div className="absolute bottom-0 left-0 w-full h-px bg-[linear-gradient(to_right,transparent,rgba(255,255,255,0.5),transparent)]" aria-hidden="true" />
-      </header>
+
+      <SiteHeader />
 
       {/* --- MAIN CONTENT --- */}
       <div className="flex-1 flex items-center justify-center p-4">

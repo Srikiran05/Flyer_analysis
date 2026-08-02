@@ -8,7 +8,8 @@ import {
   normalizeMultiSelectForRpc,
   tryParseDate,
   parseValidRange,
-  parsePrice
+  parsePrice,
+  toTitleCase
 } from "./offerBankUtils";
 
 describe("Offer Bank Utility Helpers", () => {
@@ -34,6 +35,12 @@ describe("Offer Bank Utility Helpers", () => {
     it("should return empty string for null/empty/invalid country", () => {
       expect(getCurrency(null)).toBe("");
       expect(getCurrency("Invalid")).toBe("");
+    });
+
+    it("resolves the lowercased values flyer_products stores", () => {
+      expect(getCurrency("saudi arabia")).toBe("SAR");
+      expect(getCurrency("uae")).toBe("AED");
+      expect(getCurrency(" Kuwait ")).toBe("KWD");
     });
   });
 
@@ -155,6 +162,19 @@ describe("Offer Bank Utility Helpers", () => {
 
     it("should return null for invalid text parse", () => {
       expect(parsePrice("invalid-price")).toBeNull();
+    });
+  });
+
+  describe("toTitleCase", () => {
+    it("capitalises each word of lowercased source data", () => {
+      expect(toTitleCase("saudi arabia")).toBe("Saudi Arabia");
+      expect(toTitleCase("chicken liver")).toBe("Chicken Liver");
+    });
+
+    it("leaves already-capitalised and non-string values alone", () => {
+      expect(toTitleCase("Frozen Chicken")).toBe("Frozen Chicken");
+      expect(toTitleCase("UAE")).toBe("UAE");
+      expect(toTitleCase(null)).toBe("");
     });
   });
 });

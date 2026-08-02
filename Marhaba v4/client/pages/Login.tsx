@@ -1,13 +1,14 @@
 import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/context/AuthContext";
-import { Mail, Lock } from "lucide-react";
+import { Mail, Lock, Eye, EyeOff } from "lucide-react";
 import SiteHeader from "../components/layout/SiteHeader";
 
 
 export default function Login() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const { login } = useAuth();
@@ -35,7 +36,7 @@ export default function Login() {
       ================================= */}
       <div className="flex items-center justify-center px-4 mt-20">
         <div className="w-full max-w-md">          {/* Outer Gradient Border */}
-          <div className="rounded-lg bg-gradient-to-r from-white via-white to-white p-px shadow-xl">
+          <div className="rounded-lg bg-white p-px shadow-xl">
 
             {/* Inner Login Box */}
             <div className="rounded-lg bg-white p-8">
@@ -69,13 +70,21 @@ export default function Login() {
                   <div className="relative">
                     <Lock className="absolute left-3 top-3 h-5 w-5 text-gray-500" />
                     <input
-                      type="password"
+                      type={showPassword ? "text" : "password"}
                       required
                       placeholder="••••••••"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
-                      className="w-full bg-gray-50 border border-gray-300 rounded-md px-10 py-3 text-black focus:outline-none focus:ring-2 focus:ring-purple-500 focus:bg-white"
+                      className="w-full bg-gray-50 border border-gray-300 rounded-md pl-10 pr-10 py-3 text-black focus:outline-none focus:ring-2 focus:ring-purple-500 focus:bg-white"
                     />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword((prev) => !prev)}
+                      aria-label={showPassword ? "Hide password" : "Show password"}
+                      className="absolute right-3 top-3 text-gray-500 hover:text-gray-700"
+                    >
+                      {showPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
+                    </button>
                   </div>
                 </div>
 

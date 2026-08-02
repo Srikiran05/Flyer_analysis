@@ -17,6 +17,7 @@ import {
 
 import { supabase } from '@/lib/supabaseClient';
 import { buildBrandColorMap, getBrandColor } from '@/utils/brandColors';
+import { getCurrency } from '../utils/offerBankUtils';
 
 // --- Custom Tooltip for Competitor Pricing ---
 const CustomTooltip = ({ active, payload, label, priceOption, currency, myBrand }: any) => {
@@ -32,7 +33,7 @@ const CustomTooltip = ({ active, payload, label, priceOption, currency, myBrand 
     const isMyBrand = label === myBrand;
     const dotColor = isMyBrand ? '#8b5cf6' : '#ea580c';
     return (
-      <div style={{ background: '#18181b', border: '1px solid #3f3f46', borderRadius: 12, padding: 16, minWidth: 220, boxShadow: '0 8px 32px rgba(0,0,0,.5)' }} className="text-white text-xs z-50">
+      <div style={{ background: '#18181b', border: '1px solid #3f3f46', borderRadius: 12, padding: 16, minWidth: 220, boxShadow: '0 8px 32px rgba(0,0,0,.5)' }} className="chart-tooltip text-white text-xs z-50">
         <p style={{ color: '#fff', fontWeight: 700, fontSize: 13, marginBottom: 10, borderBottom: '1px solid #27272a', paddingBottom: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{ width: 10, height: 10, borderRadius: 2, background: dotColor }} />
           {label}
@@ -65,7 +66,7 @@ const CustomScatterTooltip = ({ active, payload, priceOption, currency }: any) =
                   priceOption === 'discount' ? 'Discount' : 
                   priceOption === 'perkg' ? 'Price Per Kg/Ltr' : 'Offer Price';
     return (
-      <div style={{ background: '#18181b', border: '1px solid #3f3f46', borderRadius: 12, padding: 16, minWidth: 220, boxShadow: '0 8px 32px rgba(0,0,0,.5)' }} className="text-white text-xs z-50">
+      <div style={{ background: '#18181b', border: '1px solid #3f3f46', borderRadius: 12, padding: 16, minWidth: 220, boxShadow: '0 8px 32px rgba(0,0,0,.5)' }} className="chart-tooltip text-white text-xs z-50">
         <p style={{ color: '#fff', fontWeight: 700, fontSize: 13, marginBottom: 10, borderBottom: '1px solid #27272a', paddingBottom: 8 }}>
           {data.brand}
         </p>
@@ -139,7 +140,7 @@ const RetailerTooltip = ({ active, payload, label, currency, priceOption, barCol
     const labelTitle = isDiscount ? 'Average Discount' : 'Average Price';
     
     return (
-      <div style={{ background: '#18181b', border: '1px solid #3f3f46', borderRadius: 12, padding: 16, minWidth: 220, boxShadow: '0 8px 32px rgba(0,0,0,.5)' }} className="text-white text-xs z-50">
+      <div style={{ background: '#18181b', border: '1px solid #3f3f46', borderRadius: 12, padding: 16, minWidth: 220, boxShadow: '0 8px 32px rgba(0,0,0,.5)' }} className="chart-tooltip text-white text-xs z-50">
         <p style={{ color: '#fff', fontWeight: 700, fontSize: 13, marginBottom: 10, borderBottom: '1px solid #27272a', paddingBottom: 8 }}>{label}</p>
         <div className="space-y-2">
           {offerD && (
@@ -209,14 +210,6 @@ const priceOptions = [
     { label: 'Price per Kg/Ltr', value: 'perkg' },
     { label: 'Discount (%)', value: 'discount' },
 ];
-
-const currencyMap: Record<string, string> = {
-  "Qatar": "QAR",
-  "Kuwait": "KWD",
-  "Oman": "OMR",
-  "Saudi Arabia": "SAR",
-  "United Arab Emirates": "AED"
-};
 const ALL_COMPETITORS = 'ALL_COMPETITORS';
 
 const CompetitorPricingAnalysis: FC<CompetitorPricingAnalysisProps> = ({ 
@@ -261,7 +254,8 @@ const CompetitorPricingAnalysis: FC<CompetitorPricingAnalysisProps> = ({
     // --- State Management ---
     const [selectedPriceOption, setSelectedPriceOption] = useState('offer');
     const [brandSearch, setBrandSearch] = useState('');
-    const [isAverageToggled, setIsAverageToggled] = useState(false);
+    // On by default — the category average line is the reference users expect.
+    const [isAverageToggled, setIsAverageToggled] = useState(true);
     const [isDistributionView, setIsDistributionView] = useState(false);
     const [selectedPromotionDetails, setSelectedPromotionDetails] = useState<any[]>([]);
     const [expandedBrandSummary, setExpandedBrandSummary] = useState<Record<string, boolean>>({});
@@ -279,7 +273,7 @@ const CompetitorPricingAnalysis: FC<CompetitorPricingAnalysisProps> = ({
     const pricingRpcRequestRef = useRef(0);
     const retailerRpcRequestRef = useRef(0);
     const retailerCacheRef = useRef<Map<string, any[]>>(new Map());
-    const currentCurrency = currencyMap[selectedCountry] || 'AED';
+    const currentCurrency = getCurrency(selectedCountry);
     const getValueLabel = (val: number) => {
         if (selectedPriceOption === 'discount') return `${val.toFixed(1)}%`;
         // dynamically use the currency symbol
@@ -478,7 +472,8 @@ const CompetitorPricingAnalysis: FC<CompetitorPricingAnalysisProps> = ({
                 case 'discount': {
                     const reg = parseNum(p.regular_price);
                     const disc = parseNum(p.discounted_price);
-                    priceVal = reg > 0 ? ((reg - disc) / reg) * 100 : 0;
+                    // Needs both prices — a missing offer price is not a 100% discount.
+                    priceVal = disc > 0 && reg > disc ? ((reg - disc) / reg) * 100 : 0;
                     break;
                 }
                 case 'perkg': {
@@ -533,7 +528,16 @@ const CompetitorPricingAnalysis: FC<CompetitorPricingAnalysisProps> = ({
 
     const brandSummaryData = useMemo(() => {
         const brands: Record<string, Record<string, number[]>> = {};
-        
+        // Min/Max follow the selected metric, same as every other number on
+        // this tab. Falls back to the offer-price columns if the RPC has not
+        // been migrated yet.
+        const minField = selectedPriceOption === 'regular' ? 'min_regular' :
+                         selectedPriceOption === 'discount' ? 'min_discount' :
+                         selectedPriceOption === 'perkg' ? 'min_perkg' : 'min_price';
+        const maxField = selectedPriceOption === 'regular' ? 'max_regular' :
+                         selectedPriceOption === 'discount' ? 'max_discount' :
+                         selectedPriceOption === 'perkg' ? 'max_perkg' : 'max_price';
+
         filteredRpcPackAggregations.forEach(row => {
             if (!row) return;
             const brand = (row.brand_name || 'Unknown').trim();
@@ -548,8 +552,8 @@ const CompetitorPricingAnalysis: FC<CompetitorPricingAnalysisProps> = ({
 
             brands[brand][weight].push({
                 count: Number(row.offer_count) || 0,
-                min: Number(row.min_price) || 0,
-                max: Number(row.max_price) || 0
+                min: Number(row[minField] ?? row.min_price) || 0,
+                max: Number(row[maxField] ?? row.max_price) || 0
             } as any);
         });
 
@@ -586,7 +590,7 @@ const CompetitorPricingAnalysis: FC<CompetitorPricingAnalysisProps> = ({
         })
         .filter((row) => !search || (row.brand || '').toLowerCase().includes(search))
         .sort((a, b) => b.count - a.count);
-    }, [filteredRpcPackAggregations, brandSearch]);
+    }, [filteredRpcPackAggregations, brandSearch, selectedPriceOption]);
     
     // --- UI Calculations ---
     // Whole-category average for the current metric (all brands in the
@@ -1376,7 +1380,7 @@ const CompetitorPricingAnalysis: FC<CompetitorPricingAnalysisProps> = ({
                 name={selectedPriceOption === 'discount' ? 'Average Discount' : 'Average Price'}
                 stroke="#f97316" 
                 strokeWidth={3} 
-                dot={{ r: 4, fill: '#f97316', stroke: '#18181b', strokeWidth: 2 }} 
+                dot={{ r: 4, fill: '#f97316', strokeWidth: 0 }}
                 activeDot={{ r: 6, fill: '#fff', stroke: '#f97316', strokeWidth: 2 }}
                 animationDuration={800}
               />
@@ -1385,11 +1389,14 @@ const CompetitorPricingAnalysis: FC<CompetitorPricingAnalysisProps> = ({
           
           <div className="flex justify-center gap-10 mt-6 border-t border-zinc-800/50 pt-4">
               <div className="flex items-center gap-3">
-                  <div className="w-4 h-4 bg-gradient-to-t from-cyan-600 to-cyan-400 rounded-sm shadow-sm"></div>
+                  <div
+                    className="w-4 h-4 rounded-sm shadow-sm"
+                    style={{ background: `linear-gradient(to top, ${getBrandColor(brandColorMap, selectedChartBrand, 0).dark}, ${getBrandColor(brandColorMap, selectedChartBrand, 0).main})` }}
+                  ></div>
                   <span className="text-zinc-300 text-sm font-medium">Offer Count</span>
               </div>
               <div className="flex items-center gap-3">
-                  <div className="w-4 h-4 bg-emerald-500 rounded-full shadow-[0_0_8px_rgba(16,185,129,0.5)] border border-zinc-900"></div>
+                  <div className="w-4 h-4 rounded-full shadow-[0_0_8px_rgba(249,115,22,0.5)] border border-zinc-900" style={{ backgroundColor: '#f97316' }}></div>
                   <span className="text-zinc-300 text-sm font-medium">
                     {selectedPriceOption === 'discount' ? 'Average Discount' : 'Average Price'}
                   </span>
