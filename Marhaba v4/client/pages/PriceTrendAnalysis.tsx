@@ -33,17 +33,10 @@ import {
   X
 } from 'lucide-react';
 
-const currencyMap: Record<string, string> = {
-  "Qatar": "QAR",
-  "Kuwait": "KWD",
-  "Oman": "OMR",
-  "Saudi Arabia": "SAR",
-  "United Arab Emirates": "AED"
-};
-
 // --- SUPABASE CLIENT ---
 import { supabase } from '@/lib/supabaseClient';
 import { buildBrandColorMap, getBrandColor } from '@/utils/brandColors';
+import { getCurrency } from '../utils/offerBankUtils';
 // --- Types ---
 export interface FlyerProduct {
   id: number;
@@ -63,8 +56,19 @@ export interface FlyerProduct {
   // created_at?: string;
   start_date: string | null; // Added
   end_date: string | null;   // Added
-  image_path?: string | null; // <--- ADD THIS LINE 
+  image_path?: string | null; // <--- ADD THIS LINE
 }
+
+// The four comparison windows in the summary bar chart. This chart is the one
+// place that does NOT use the shared brand colours: it puts four bars side by
+// side per brand, so the hue has to separate the periods or the group reads as
+// a single block. Brand identity is carried by the x-axis label here.
+const PERIOD_BARS = [
+  { key: 'latest4', label: 'Latest 4 weeks', from: '#38bdf8', to: '#0284c7' },
+  { key: 'latest12', label: 'Latest 12 weeks', from: '#34d399', to: '#059669' },
+  { key: 'ytd', label: 'YTD', from: '#a3e635', to: '#65a30d' },
+  { key: 'latest52', label: 'Latest 52 weeks', from: '#fbbf24', to: '#d97706' },
+] as const;
 
 interface Props {
   products?: any[]; // Optional, as we fetch internally now
@@ -197,7 +201,7 @@ const CustomTooltip = ({ active, payload, label, metric, currency }: any) => {
     const hiddenCount = sortedPayload.length - 10;
 
     return (
-      <div style={{ background: '#18181b', border: '1px solid #3f3f46', borderRadius: 12, padding: 16, minWidth: 220, boxShadow: '0 8px 32px rgba(0,0,0,.5)' }} className="text-white text-xs z-50">
+      <div style={{ background: '#18181b', border: '1px solid #3f3f46', borderRadius: 12, padding: 16, minWidth: 220, boxShadow: '0 8px 32px rgba(0,0,0,.5)' }} className="chart-tooltip text-white text-xs z-50">
         <p style={{ color: '#fff', fontWeight: 700, fontSize: 13, marginBottom: 10, borderBottom: '1px solid #27272a', paddingBottom: 8 }}>{formatWeekLabel(label)}</p>
         <div className="space-y-1">
           {top10.map((entry: any, index: number) => (
@@ -334,7 +338,11 @@ const PriceTrendAnalysis = ({
   const [p2Start, setP2Start] = useState<string>(format(subMonths(new Date(), 3), 'yyyy-MM-dd'));
   const [p2End, setP2End] = useState<string>(format(new Date(), 'yyyy-MM-dd'));
   const [showBrandList, setShowBrandList] = useState(false);
-  const [selectedWeek, setSelectedWeek] = useState<string | null>(null);
+  // Weeks clicked on the trend chart accumulate, so several weeks can be
+  // compared in the table at once. Clicking a selected week toggles it off.
+  const [selectedWeeks, setSelectedWeeks] = useState<string[]>([]);
+  const toggleWeek = (week: string) =>
+    setSelectedWeeks((prev) => prev.includes(week) ? prev.filter((w) => w !== week) : [...prev, week]);
   const [hoveredImage, setHoveredImage] = useState<{ url: string, x: number, y: number } | null>(null);
   const [tableSearchQuery, setTableSearchQuery] = useState('');
   const [tableSelectedRetailer, setTableSelectedRetailer] = useState('');
@@ -374,7 +382,7 @@ const PriceTrendAnalysis = ({
   const currentCurrency = useMemo(() => {
     // CHANGE: Use processedData here
     if (processedData.length > 0 && processedData[0].country) {
-      return currencyMap[processedData[0].country] || '';
+      return getCurrency(processedData[0].country);
     }
     return '';
   }, [processedData]); // Update dependency
@@ -635,14 +643,14 @@ const PriceTrendAnalysis = ({
     let baseList = isCustomPeriod ? [...period1Data.filteredList, ...period2Data.filteredList] : defaultData.filteredList;
 
     // 1. Filter by selected chart week
-    if (selectedWeek) {
+    if (selectedWeeks.length > 0) {
       baseList = baseList.filter(p => {
         const pDate = getProductEffectiveDate(p);
         if (!pDate) return false;
         const year = getYear(pDate);
         const week = getISOWeek(pDate);
         const weekStr = week < 10 ? `0${week}` : `${week}`;
-        return `${year}${weekStr}` === selectedWeek;
+        return selectedWeeks.includes(`${year}${weekStr}`);
       });
     }
 
@@ -684,7 +692,7 @@ const PriceTrendAnalysis = ({
       const dateB = getProductEffectiveDate(b)?.getTime() || 0;
       return dateB - dateA;
     });
-  }, [defaultData, period1Data, period2Data, isCustomPeriod, selectedWeek, tableSearchQuery, tableSelectedRetailer, tableStartDate, tableEndDate]);
+  }, [defaultData, period1Data, period2Data, isCustomPeriod, selectedWeeks, tableSearchQuery, tableSelectedRetailer, tableStartDate, tableEndDate]);
 
   // Chart Keys
   const getKeys = (data: any[]) => {
@@ -750,6 +758,17 @@ const PriceTrendAnalysis = ({
       <style>{`
         .no-scrollbar::-webkit-scrollbar { display: none; }
         .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+        /* Thin but VISIBLE bars for the offers table — it scrolls both ways and
+           a hidden scrollbar left no hint that the clipped columns existed. */
+        .thin-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
+        .thin-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .thin-scrollbar::-webkit-scrollbar-thumb {
+          background-color: rgba(113, 113, 122, 0.45);
+          border-radius: 20px;
+        }
+        .thin-scrollbar::-webkit-scrollbar-thumb:hover { background-color: rgba(113, 113, 122, 0.7); }
+        .thin-scrollbar { scrollbar-width: thin; scrollbar-color: rgba(113,113,122,0.45) transparent; }
         
         /* Hide default calendar icon but keep it clickable to open native date picker */
         input[type="date"]::-webkit-calendar-picker-indicator {
@@ -840,10 +859,12 @@ const PriceTrendAnalysis = ({
                 Average {metric === 'Discount' ? 'Discount (%)' : metric}
               </h3>
               <div className="flex flex-wrap gap-4 text-xs font-medium text-zinc-400">
-                <div className="flex items-center gap-2"><span className="w-3 h-3 rounded-sm bg-[#38bdf8]"></span> Latest 4 weeks</div>
-                <div className="flex items-center gap-2"><span className="w-3 h-3 rounded-sm bg-[#34d399]"></span> Latest 12 weeks</div>
-                <div className="flex items-center gap-2"><span className="w-3 h-3 rounded-sm bg-[#a3e635]"></span> YTD</div>
-                <div className="flex items-center gap-2"><span className="w-3 h-3 rounded-sm bg-[#fbbf24]"></span> Latest 52 weeks</div>
+                {PERIOD_BARS.map(({ key, label, from }) => (
+                  <div key={key} className="flex items-center gap-2">
+                    <span className="w-3 h-3 rounded-sm" style={{ backgroundColor: from }} />
+                    {label}
+                  </div>
+                ))}
               </div>
             </div>
             <div className="h-[250px] w-full">
@@ -852,12 +873,6 @@ const PriceTrendAnalysis = ({
               ) : (
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={barChartData} margin={{ top: 30, right: 30, left: 20, bottom: 5 }} barGap={6}>
-                    <defs>
-                      <linearGradient id="barGrad4w" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#38bdf8" /><stop offset="100%" stopColor="#0284c7" /></linearGradient>
-                      <linearGradient id="barGrad12w" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#34d399" /><stop offset="100%" stopColor="#059669" /></linearGradient>
-                      <linearGradient id="barGradYtd" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#a3e635" /><stop offset="100%" stopColor="#65a30d" /></linearGradient>
-                      <linearGradient id="barGrad52w" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#fbbf24" /><stop offset="100%" stopColor="#d97706" /></linearGradient>
-                    </defs>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#27272a" />
                     <XAxis dataKey="name" stroke="#71717a" fontSize={12} tickLine={false} axisLine={false} dy={10} />
                     <YAxis
@@ -873,7 +888,7 @@ const PriceTrendAnalysis = ({
                         if (!active || !payload?.length) return null;
                         const formatVal = (v: any) => typeof v === 'number' ? (metric === 'Discount' ? `${v.toFixed(1)}%` : `${v.toFixed(1)} ${currentCurrency}`) : 'N/A';
                         return (
-                          <div style={{ background: '#18181b', border: '1px solid #3f3f46', borderRadius: 12, padding: 16, minWidth: 240, boxShadow: '0 8px 32px rgba(0,0,0,.5)' }} className="text-white text-xs z-50">
+                          <div style={{ background: '#18181b', border: '1px solid #3f3f46', borderRadius: 12, padding: 16, minWidth: 240, boxShadow: '0 8px 32px rgba(0,0,0,.5)' }} className="chart-tooltip text-white text-xs z-50">
                             <div style={{ color: '#fff', fontWeight: 700, fontSize: 13, marginBottom: 10, borderBottom: '1px solid #27272a', paddingBottom: 8 }}>{label}</div>
                             {payload.map((entry: any, index: number) => (
                               <div key={index} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
@@ -888,14 +903,26 @@ const PriceTrendAnalysis = ({
                         );
                       }}
                     />
-                    <Bar dataKey="latest4" name="Latest 4 weeks" fill="url(#barGrad4w)" radius={[6, 6, 0, 0]} barSize={28} animationDuration={800}
-                      label={{ position: 'top', fill: '#38bdf8', fontSize: 10, fontWeight: 600, formatter: (v: number) => v > 0 ? (metric === 'Discount' ? `${Math.round(v)}%` : v.toFixed(1)) : '' }} />
-                    <Bar dataKey="latest12" name="Latest 12 weeks" fill="url(#barGrad12w)" radius={[6, 6, 0, 0]} barSize={28} animationDuration={800}
-                      label={{ position: 'top', fill: '#34d399', fontSize: 10, fontWeight: 600, formatter: (v: number) => v > 0 ? (metric === 'Discount' ? `${Math.round(v)}%` : v.toFixed(1)) : '' }} />
-                    <Bar dataKey="ytd" name="YTD" fill="url(#barGradYtd)" radius={[6, 6, 0, 0]} barSize={28} animationDuration={800}
-                      label={{ position: 'top', fill: '#a3e635', fontSize: 10, fontWeight: 600, formatter: (v: number) => v > 0 ? (metric === 'Discount' ? `${Math.round(v)}%` : v.toFixed(1)) : '' }} />
-                    <Bar dataKey="latest52" name="Latest 52 weeks" fill="url(#barGrad52w)" radius={[6, 6, 0, 0]} barSize={28} animationDuration={800}
-                      label={{ position: 'top', fill: '#fbbf24', fontSize: 10, fontWeight: 600, formatter: (v: number) => v > 0 ? (metric === 'Discount' ? `${Math.round(v)}%` : v.toFixed(1)) : '' }} />
+                    <defs>
+                      {PERIOD_BARS.map(({ key, from, to }) => (
+                        <linearGradient key={key} id={`barGrad-${key}`} x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor={from} />
+                          <stop offset="100%" stopColor={to} />
+                        </linearGradient>
+                      ))}
+                    </defs>
+                    {PERIOD_BARS.map(({ key, label, from }) => (
+                      <Bar
+                        key={key}
+                        dataKey={key}
+                        name={label}
+                        fill={`url(#barGrad-${key})`}
+                        radius={[6, 6, 0, 0]}
+                        barSize={28}
+                        animationDuration={800}
+                        label={{ position: 'top', fill: from, fontSize: 10, fontWeight: 600, formatter: (v: number) => v > 0 ? (metric === 'Discount' ? `${Math.round(v)}%` : v.toFixed(1)) : '' }}
+                      />
+                    ))}
                   </BarChart>
                 </ResponsiveContainer>
               )}
@@ -963,10 +990,12 @@ const PriceTrendAnalysis = ({
             </div>
 
             {/* RIGHT SIDE: Clear Filter */}
-            {selectedWeek && (
+            {selectedWeeks.length > 0 && (
               <div className="flex items-center gap-2 animate-in fade-in">
-                <span className="text-xs text-emerald-400 font-medium">Filtered by Week: {formatWeekLabel(selectedWeek)}</span>
-                <button onClick={() => setSelectedWeek(null)} className="text-xs bg-red-900/50 text-red-200 px-2 py-1 rounded hover:bg-red-900 border border-red-800">Clear</button>
+                <span className="text-xs text-emerald-400 font-medium">
+                  Filtered by {selectedWeeks.length === 1 ? `Week: ${formatWeekLabel(selectedWeeks[0])}` : `${selectedWeeks.length} weeks`}
+                </span>
+                <button onClick={() => setSelectedWeeks([])} className="text-xs bg-red-900/50 text-red-200 px-2 py-1 rounded hover:bg-red-900 border border-red-800">Clear</button>
               </div>
             )}
           </div>
@@ -978,7 +1007,7 @@ const PriceTrendAnalysis = ({
               data={defaultData.chartData}
               lineKeys={activeLineKeys}
               metric={metric}
-              onChartClick={(data: any) => data && data.activeLabel && setSelectedWeek(data.activeLabel)}
+              onChartClick={(data: any) => data && data.activeLabel && toggleWeek(data.activeLabel)}
               lineViewMode={lineViewMode}
               getLineColor={getLineColor}
               height={400}
@@ -994,7 +1023,7 @@ const PriceTrendAnalysis = ({
                   data={period1Data.chartData}
                   lineKeys={activeLineKeys}
                   metric={metric}
-                  onChartClick={(data: any) => data && data.activeLabel && setSelectedWeek(data.activeLabel)}
+                  onChartClick={(data: any) => data && data.activeLabel && toggleWeek(data.activeLabel)}
                   lineViewMode={lineViewMode}
                   getLineColor={getLineColor}
                   height={300}
@@ -1011,7 +1040,7 @@ const PriceTrendAnalysis = ({
                   data={period2Data.chartData}
                   lineKeys={activeLineKeys}
                   metric={metric}
-                  onChartClick={(data: any) => data && data.activeLabel && setSelectedWeek(data.activeLabel)}
+                  onChartClick={(data: any) => data && data.activeLabel && toggleWeek(data.activeLabel)}
                   lineViewMode={lineViewMode}
                   getLineColor={getLineColor}
                   height={300}
@@ -1100,26 +1129,27 @@ const PriceTrendAnalysis = ({
               </div>
 
               {/* Selected Chart Week Info */}
-              {selectedWeek && (
-                <div className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-purple-950/30 border border-purple-900/50 text-[11px] text-purple-400 font-medium animate-in fade-in">
-                  <span>Week: {formatWeekLabel(selectedWeek)}</span>
+              {selectedWeeks.map((week) => (
+                <div key={week} className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-purple-950/30 border border-purple-900/50 text-[11px] text-purple-400 font-medium animate-in fade-in">
+                  <span>Week: {formatWeekLabel(week)}</span>
                   <button
-                    onClick={() => setSelectedWeek(null)}
+                    onClick={() => toggleWeek(week)}
+                    aria-label={`Remove week ${formatWeekLabel(week)}`}
                     className="text-purple-400 hover:text-purple-300 transition-colors"
                   >
                     <X className="w-3 h-3" />
                   </button>
                 </div>
-              )}
+              ))}
             </div>
 
             {/* Clear All button */}
-            {(tableSearchQuery || tableSelectedRetailer || selectedWeek || tableStartDate || tableEndDate) && (
+            {(tableSearchQuery || tableSelectedRetailer || selectedWeeks.length > 0 || tableStartDate || tableEndDate) && (
               <button
                 onClick={() => {
                   setTableSearchQuery('');
                   setTableSelectedRetailer('');
-                  setSelectedWeek(null);
+                  setSelectedWeeks([]);
                   setTableStartDate('');
                   setTableEndDate('');
                 }}
@@ -1130,7 +1160,7 @@ const PriceTrendAnalysis = ({
             )}
           </div>
 
-          <div className="overflow-x-auto max-h-[500px] overflow-y-auto no-scrollbar rounded-lg border border-zinc-800">
+          <div className="overflow-x-auto max-h-[500px] overflow-y-auto thin-scrollbar rounded-lg border border-zinc-800">
             <table className="w-full text-left border-collapse min-w-[1400px] text-xs">
               <thead className="bg-zinc-900/80 backdrop-blur text-zinc-300 font-semibold sticky top-0 z-10 shadow-sm border-b border-zinc-800">
                 <tr>

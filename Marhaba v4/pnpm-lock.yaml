@@ -20,6 +20,9 @@ importers:
       express:
         specifier: ^5.1.0
         version: 5.1.0
+      fflate:
+        specifier: ^0.8.2
+        version: 0.8.2
       papaparse:
         specifier: ^5.5.3
         version: 5.5.4
