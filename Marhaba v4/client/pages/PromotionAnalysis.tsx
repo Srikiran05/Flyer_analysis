@@ -230,7 +230,9 @@ const CustomFilterDropdown: FC<CustomDropdownProps> = ({
       </button>
 
       {isOpen && !disabled && (
-        <div className="absolute left-0 right-0 mt-1 max-h-60 overflow-y-auto rounded-xl border border-zinc-800/80 bg-zinc-950/95 backdrop-blur-md shadow-2xl z-50 p-1.5 space-y-1 scrollbar-thin scrollbar-thumb-zinc-800 scrollbar-track-transparent animate-in fade-in slide-in-from-top-1 duration-200">
+        // The options list below owns the scrolling — a scrollbar here too
+        // stacked two of them inside one dropdown.
+        <div className="absolute left-0 right-0 mt-1 overflow-hidden rounded-xl border border-zinc-800/80 bg-zinc-950/95 backdrop-blur-md shadow-2xl z-50 p-1.5 space-y-1 animate-in fade-in slide-in-from-top-1 duration-200">
           {searchable && (
             <div className="sticky top-0 bg-zinc-950/95 backdrop-blur-md pb-1.5 pt-0.5 px-1 border-b border-zinc-800/60 z-10 relative flex items-center">
               <Search className="absolute left-2.5 h-3.5 w-3.5 text-zinc-500 pointer-events-none" />
@@ -268,7 +270,7 @@ const CustomFilterDropdown: FC<CustomDropdownProps> = ({
             {!value && <Check className="h-3.5 w-3.5 text-purple-400" />}
           </button>
 
-          <div className="space-y-0.5 max-h-40 overflow-y-auto scrollbar-thin scrollbar-thumb-zinc-800 scrollbar-track-transparent">
+          <div className="space-y-0.5 max-h-52 overflow-y-auto thin-scrollbar">
             {sortedOptions.map((opt) => {
               const isSelected = value === opt;
               return (
@@ -2096,7 +2098,9 @@ const PromotionAnalysis: FC = () => {
               </button>
               <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-orange-500/50 pointer-events-none" />
               {isCompetitorDropdownOpen && !isLoadingFilters && (
-                <div className="absolute left-0 right-0 mt-1 max-h-60 overflow-y-auto rounded-xl border border-zinc-800/80 bg-zinc-950/95 backdrop-blur-md shadow-2xl z-50 p-1.5 space-y-1 scrollbar-thin scrollbar-thumb-zinc-800 scrollbar-track-transparent animate-in fade-in slide-in-from-top-1 duration-200">
+                // The options list below owns the scrolling — a scrollbar here too
+        // stacked two of them inside one dropdown.
+        <div className="absolute left-0 right-0 mt-1 overflow-hidden rounded-xl border border-zinc-800/80 bg-zinc-950/95 backdrop-blur-md shadow-2xl z-50 p-1.5 space-y-1 animate-in fade-in slide-in-from-top-1 duration-200">
                   <div className="sticky top-0 bg-zinc-950/95 backdrop-blur-md pb-2 pt-0.5 px-1 border-b border-zinc-800/60 z-10 space-y-1.5">
                     <div className="relative flex items-center">
                       <Search className="absolute left-2.5 h-3.5 w-3.5 text-zinc-500 pointer-events-none" />
@@ -2139,7 +2143,7 @@ const PromotionAnalysis: FC = () => {
                       <Check className="h-3.5 w-3.5 text-orange-400" />
                     )}
                   </button>
-                  <div className="space-y-0.5 max-h-40 overflow-y-auto scrollbar-thin scrollbar-thumb-zinc-800 scrollbar-track-transparent">
+                  <div className="space-y-0.5 max-h-52 overflow-y-auto thin-scrollbar">
                     {sortedCompetitorOptions.map((brand) => {
                       const isSelected = selectedCompetitors.includes(brand);
                       return (

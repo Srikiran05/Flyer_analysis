@@ -759,17 +759,8 @@ const PriceTrendAnalysis = ({
         .no-scrollbar::-webkit-scrollbar { display: none; }
         .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
 
-        /* Thin but VISIBLE bars for the offers table — it scrolls both ways and
-           a hidden scrollbar left no hint that the clipped columns existed. */
-        .thin-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
-        .thin-scrollbar::-webkit-scrollbar-track { background: transparent; }
-        .thin-scrollbar::-webkit-scrollbar-thumb {
-          background-color: rgba(113, 113, 122, 0.45);
-          border-radius: 20px;
-        }
-        .thin-scrollbar::-webkit-scrollbar-thumb:hover { background-color: rgba(113, 113, 122, 0.7); }
-        .thin-scrollbar { scrollbar-width: thin; scrollbar-color: rgba(113,113,122,0.45) transparent; }
-        
+        /* .thin-scrollbar now lives in global.css — other pages use it too. */
+
         /* Hide default calendar icon but keep it clickable to open native date picker */
         input[type="date"]::-webkit-calendar-picker-indicator {
           position: absolute;
